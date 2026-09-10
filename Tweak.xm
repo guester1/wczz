@@ -181,7 +181,7 @@ static NSArray *WCZZFilteredVisibleSessions(id logic) {
             return nil;
         }
     }
-    return %orig(index);
+    return %orig;
 }
 
 - (long long)getFakeCellCount {
@@ -191,7 +191,7 @@ static NSArray *WCZZFilteredVisibleSessions(id logic) {
 }
 
 - (id)getFakeCellData:(unsigned int)index {
-    id original = %orig(index);
+    id original = %orig;
     if (!WCZZBool(WCZZGroupEnabledKey, YES)) return original;
     NSArray *groups = WCZZFoldedSessionsFromLogic(self);
     if (!groups.count) return original;
@@ -224,7 +224,7 @@ static NSArray *WCZZFilteredVisibleSessions(id logic) {
             }
         }
     }
-    %orig(indexPath);
+    %orig;
 }
 
 - (void)onSessionRebuildEnd { %orig; dispatch_async(dispatch_get_main_queue(), ^{ [[NSNotificationCenter defaultCenter] postNotificationName:@"wczz.session.changed" object:nil]; }); }
@@ -233,7 +233,7 @@ static NSArray *WCZZFilteredVisibleSessions(id logic) {
 
 %hook NewMainFrameViewController
 - (void)logicUpdateSession:(id)session {
-    %orig(session);
+    %orig;
     if (WCZZShouldFoldSession(session)) dispatch_async(dispatch_get_main_queue(), ^{ SEL s = NSSelectorFromString(@"reloadSessions"); if ([self respondsToSelector:s]) ((void(*)(id,SEL))objc_msgSend)(self,s); });
 }
 %end
@@ -275,8 +275,6 @@ static void WCZZApplyRedDetail(id vc, id info) {
 
 %hook WCRedEnvelopesReceiveControlLogic
 - (void)showDetailView { %orig; if (!WCZZBool(WCZZRedDetailKey, YES)) return; dispatch_async(dispatch_get_main_queue(), ^{ id view = WCZZValue(self, @"redEnvelopesDetailView"); id info = WCZZFindDetailInfoInObject(self, 0); if (info && [view isKindOfClass:[UIView class]]) WCZZApplyRedDetail(view, info); }); }
-- (void)OnQueryRedEnvelopesDetailRequest:(id)arg1 Error:(id)arg2 { %orig; if (!WCZZBool(WCZZRedDetailKey, YES)) return; dispatch_async(dispatch_get_main_queue(), ^{ id info = WCZZFindDetailInfoInObject(self,0); if (!info) info = WCZZFindDetailInfoInObject(arg1,0); if (info) { id view = WCZZValue(self,@"redEnvelopesDetailView"); if ([view isKindOfClass:[UIView class]]) WCZZApplyRedDetail(view,info); } }); }
-- (void)closeAnimationWindowAndShowDetailView:(id)arg1 { %orig(arg1); if (!WCZZBool(WCZZRedDetailKey, YES)) return; dispatch_async(dispatch_get_main_queue(), ^{ id info = WCZZFindDetailInfoInObject(self,0); if (!info) info = WCZZFindDetailInfoInObject(arg1,0); id view = WCZZValue(self,@"redEnvelopesDetailView"); if (info && [view isKindOfClass:[UIView class]]) WCZZApplyRedDetail(view,info); }); }
 %end
 
 %ctor {
