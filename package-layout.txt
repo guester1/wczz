@@ -1,3 +1,0 @@
-DEBIAN/control
-var/jb/Library/MobileSubstrate/DynamicLibraries/wczz.dylib
-var/jb/Library/MobileSubstrate/DynamicLibraries/wczz.plist
