@@ -1,0 +1,9 @@
+Package: com.wczz
+Name: wczz
+Version: 1.0-0
+Architecture: iphoneos-arm64
+Description: wczz - MiYou-compatible WeChat Group Helper and Red Detail framework
+Maintainer: wczz
+Author: wczz
+Section: Tweaks
+Depends: mobilesubstrate (>= 0.9.5000)
