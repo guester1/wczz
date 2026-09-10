@@ -1,14 +1,41 @@
 # Reverse-engineering evidence
 
-The implementation is based on the supplied MiYou 3.9-5 rootless binary and the supplied current WeChat headers. WCRefine is not used.
+## MiYou source of behavior
 
-Confirmed MiYou evidence:
-- GroupTool contains RoomList/BrandList/FriendList/sessionList/filterSessionList/sessionDataList and related setters.
-- GroupTool exposes createSessionWithUserName:nickName:showRedDot:readAsRedDot:.
-- MiYou references FakeMainFrameCellData and FakeMainFrameCell/FakeMainFrameItemView updateContentView paths.
-- MiYou settings contain settingOpenRoomEnable:, settingIsHelperTop:, settingIconType and showFilterVC.
-- MiYou red-detail code reads m_oWCRedEnvelopesDetailInfo and m_lTotalAmount/m_lTotalNum/m_lRecNum/m_lRecAmount; total amount is converted from cents by dividing by 100.
-- MiYou calls startReceiveRedEnvelopesLogic:Data: on a service returned by LMUtils getService:.
+The implementation is based on static analysis of the supplied `微信助手_3.9-5_无根.deb`. No WCRefine code/API is used.
 
-Important limitation:
-The supplied binary is stripped/obfuscated. Exact original source and every runtime insertion point cannot be recovered statically. The code therefore uses the strongest matching current-WeChat APIs and dynamic runtime checks rather than pretending an unverified hook is exact.
+### GroupTool
+
+Confirmed in MiYou metadata: `GroupTool` stores and filters room/session lists and exposes group-helper configuration state. Relevant methods include `filterRoomList`, `filterSessionList`, `setSessionList:`, `setFilterSessionList:`, `isOpenRoomEnable`, `isOpenRoomHelper`, `setIsOpenRoomHelper:`, and related list accessors.
+
+MiYou settings metadata also confirms group-helper controls for enabling the feature, pinning it, choosing common groups, and choosing the helper icon.
+
+### Session construction
+
+MiYou's `createSessionWithUserName:nickName:showRedDot:readAsRedDot:` path constructs session information and associates a last message/read-count state. The supplied current WeChat headers expose the corresponding `MMSessionInfo` fields (`m_nsUserName`, `m_uUnReadCount`, `m_bShowUnReadAsRedDot`, `m_contact`, `m_msgWrap`).
+
+### Current WeChat adaptation
+
+The supplied current WeChat headers expose:
+
+- `MainFrameLogicController` fake-cell APIs (`getFakeCellCount`, `getFakeCellData:`) and filtered-session APIs.
+- `FakeMainFrameCellData` with username/name/message/top properties.
+- `CContact +IsChatRoomContact:`.
+- `NewMainFrameViewController` session navigation/reload methods.
+
+The tweak uses these current APIs dynamically rather than assuming the old MiYou binary's private addresses are valid in the current WeChat.
+
+## Red-envelope detail
+
+MiYou references `m_oWCRedEnvelopesDetailInfo` and reads:
+
+- `m_lTotalAmount`
+- `m_lTotalNum`
+- `m_lRecNum`
+- `m_lRecAmount`
+
+The amount values are treated as fen/cents and divided by 100. The current WeChat headers expose the same detail-info object through the red-envelope receive/detail flow.
+
+## Confidence boundaries
+
+The supplied binary is compiled code, not original source. Exact original source cannot be recovered byte-for-byte. The group-list behavior and red-detail data fields are evidence-based; the exact original UI hook and grouping implementation are not fully recoverable from the available metadata, so this project uses a current-WeChat adaptation.

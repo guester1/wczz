@@ -1,7 +1,7 @@
-#import <UIKit/UIKit.h>
-#import <Foundation/Foundation.h>
+#import "WeChatCompat.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
+#include <string.h>
 
 #pragma mark - wczz 1.0-0
 
@@ -260,8 +260,12 @@ static void WCZZRequestMainListReload(void) {
     %orig(indexPath);
 }
 
-- (void)onSessionRebuildEnd { %orig; dispatch_async(dispatch_get_main_queue(), ^{ [[NSNotificationCenter defaultCenter] postNotificationName:@"wczz.session.changed" object:nil]; }); }
-- (void)onMainSessionReload { %orig; dispatch_async(dispatch_get_main_queue(), ^{ [[NSNotificationCenter defaultCenter] postNotificationName:@"wczz.session.changed" object:nil]; }); }
+- (void)onSessionRebuildEnd {
+    %orig;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"wczz.session.changed" object:nil];
+    });
+}
 %end
 
 %hook NewMainFrameViewController
