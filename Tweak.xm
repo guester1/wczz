@@ -8,7 +8,6 @@
 static NSString * const WCZZGroupEnabledKey = @"wczz.group.enabled";
 static NSString * const WCZZGroupTopKey = @"wczz.group.top";
 static NSString * const WCZZCommonRoomsKey = @"wczz.group.commonRooms";
-static NSString * const WCZZRedDetailKey = @"wczz.redDetail.enabled";
 static NSString * const WCZZGroupUserName = @"wczz_group_helper";
 
 static BOOL WCZZBool(NSString *key, BOOL fallback) {
@@ -141,7 +140,7 @@ static NSArray *WCZZFilteredVisibleSessions(id logic) {
 @interface WCZZSettingsViewController : UITableViewController @end
 @implementation WCZZSettingsViewController
 - (void)viewDidLoad { [super viewDidLoad]; self.title = @"wczz"; self.tableView.tableFooterView = [UIView new]; }
-- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section { return 4; }
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section { return 3; }
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
     static NSString *ID = @"wczz.setting"; UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:ID];
     if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:ID];
@@ -149,7 +148,6 @@ static NSArray *WCZZFilteredVisibleSessions(id logic) {
     if (ip.row == 0) { cell.textLabel.text = @"开启群助手"; sw.on = WCZZBool(WCZZGroupEnabledKey, YES); sw.tag = 100; cell.accessoryView = sw; }
     else if (ip.row == 1) { cell.textLabel.text = @"置顶群助手"; sw.on = WCZZBool(WCZZGroupTopKey, YES); sw.tag = 101; cell.accessoryView = sw; }
     else if (ip.row == 2) { cell.textLabel.text = @"常用群"; cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator; }
-    else { cell.textLabel.text = @"红包详情"; sw.on = WCZZBool(WCZZRedDetailKey, YES); sw.tag = 102; cell.accessoryView = sw; }
     if (cell.accessoryView == sw) [sw addTarget:self action:@selector(wczzSwitch:) forControlEvents:UIControlEventValueChanged]; return cell;
 }
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
@@ -157,7 +155,7 @@ static NSArray *WCZZFilteredVisibleSessions(id logic) {
     WCZZCommonRoomsViewController *vc = [WCZZCommonRoomsViewController new]; UIViewController *root = self.navigationController.viewControllers.firstObject;
     vc.mainController = [root isKindOfClass:objc_getClass("NewMainFrameViewController")] ? root : nil; [self.navigationController pushViewController:vc animated:YES];
 }
-- (void)wczzSwitch:(UISwitch *)sw { if (sw.tag == 100) WCZZSetBool(WCZZGroupEnabledKey, sw.on); else if (sw.tag == 101) WCZZSetBool(WCZZGroupTopKey, sw.on); else if (sw.tag == 102) WCZZSetBool(WCZZRedDetailKey, sw.on); [[NSNotificationCenter defaultCenter] postNotificationName:@"wczz.settings.changed" object:nil]; }
+- (void)wczzSwitch:(UISwitch *)sw { if (sw.tag == 100) WCZZSetBool(WCZZGroupEnabledKey, sw.on); else if (sw.tag == 101) WCZZSetBool(WCZZGroupTopKey, sw.on); [[NSNotificationCenter defaultCenter] postNotificationName:@"wczz.settings.changed" object:nil]; }
 @end
 
 #pragma mark - Main list / MiYou fake-cell path
@@ -238,50 +236,10 @@ static NSArray *WCZZFilteredVisibleSessions(id logic) {
 }
 %end
 
-#pragma mark - Red detail
-
-static id WCZZFindDetailInfoInObject(id object, NSUInteger depth) {
-    if (!object || depth > 2) return nil;
-    Class cls = object_getClass(object);
-    const char *cn = cls ? class_getName(cls) : "";
-    if (strstr(cn, "WCRedEnvelopesDetailInfo")) return object;
-    id direct = WCZZValue(object, @"m_oWCRedEnvelopesDetailInfo");
-    if (direct) return direct;
-    if (depth == 2) return nil;
-    for (Class c = cls; c && c != [NSObject class]; c = class_getSuperclass(c)) {
-        unsigned int count = 0; Ivar *ivars = class_copyIvarList(c, &count);
-        for (unsigned int i = 0; i < count; i++) {
-            Ivar iv = ivars[i]; const char *type = ivar_getTypeEncoding(iv);
-            if (!type || type[0] != '@') continue;
-            id child = object_getIvar(object, iv);
-            id found = WCZZFindDetailInfoInObject(child, depth + 1);
-            if (found) { free(ivars); return found; }
-        }
-        free(ivars);
-    }
-    return nil;
-}
-static void WCZZApplyRedDetail(id vc, id info) {
-    if (!WCZZBool(WCZZRedDetailKey, YES) || !vc || !info) return;
-    long long totalAmount = [WCZZValue(info, @"m_lTotalAmount") longLongValue];
-    long long totalNum = [WCZZValue(info, @"m_lTotalNum") longLongValue];
-    long long recNum = [WCZZValue(info, @"m_lRecNum") longLongValue];
-    long long recAmount = [WCZZValue(info, @"m_lRecAmount") longLongValue];
-    if (totalAmount <= 0 && totalNum <= 0 && recNum <= 0 && recAmount <= 0) return;
-    NSString *text = [NSString stringWithFormat:@"共 %.2f 元 · %lld 人 · 已领取 %lld 人 / %.2f 元", totalAmount / 100.0, totalNum, recNum, recAmount / 100.0];
-    UILabel *label = WCZZValue(vc, @"m_receivedInfoLable");
-    if ([label isKindOfClass:[UILabel class]]) label.text = text;
-}
-
-%hook WCRedEnvelopesReceiveControlLogic
-- (void)showDetailView { %orig; if (!WCZZBool(WCZZRedDetailKey, YES)) return; dispatch_async(dispatch_get_main_queue(), ^{ id view = WCZZValue(self, @"redEnvelopesDetailView"); id info = WCZZFindDetailInfoInObject(self, 0); if (info && [view isKindOfClass:[UIView class]]) WCZZApplyRedDetail(view, info); }); }
-%end
-
 %ctor {
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     if ([d objectForKey:WCZZGroupEnabledKey] == nil) [d setBool:YES forKey:WCZZGroupEnabledKey];
     if ([d objectForKey:WCZZGroupTopKey] == nil) [d setBool:YES forKey:WCZZGroupTopKey];
-    if ([d objectForKey:WCZZRedDetailKey] == nil) [d setBool:YES forKey:WCZZRedDetailKey];
     if ([d objectForKey:WCZZCommonRoomsKey] == nil) [d setObject:@[] forKey:WCZZCommonRoomsKey];
     [d synchronize];
 }
