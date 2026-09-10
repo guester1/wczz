@@ -3,8 +3,6 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 
-#pragma mark - wczz 1.0-0
-
 static NSString * const WCZZGroupEnabledKey = @"wczz.group.enabled";
 static NSString * const WCZZGroupTopKey = @"wczz.group.top";
 static NSString * const WCZZCommonRoomsKey = @"wczz.group.commonRooms";
@@ -244,7 +242,6 @@ static NSArray *WCZZFilteredVisibleSessions(id logic) {
     [d synchronize];
 }
 
-#pragma mark - Settings entry
 %hook NewSettingViewController
 - (void)viewDidLoad {
     %orig;
