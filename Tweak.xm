@@ -275,7 +275,7 @@ static void WCZZApplyRedDetail(id vc, id info) {
 
 %hook WCRedEnvelopesReceiveControlLogic
 - (void)showDetailView { %orig; if (!WCZZBool(WCZZRedDetailKey, YES)) return; dispatch_async(dispatch_get_main_queue(), ^{ id view = WCZZValue(self, @"redEnvelopesDetailView"); id info = WCZZFindDetailInfoInObject(self, 0); if (info && [view isKindOfClass:[UIView class]]) WCZZApplyRedDetail(view, info); }); }
-- (void)OnQueryRedEnvelopesDetailRequest:(id)arg1 Error:(id)arg2 { %orig(arg1,arg2); if (!WCZZBool(WCZZRedDetailKey, YES)) return; dispatch_async(dispatch_get_main_queue(), ^{ id info = WCZZFindDetailInfoInObject(self,0); if (!info) info = WCZZFindDetailInfoInObject(arg1,0); if (info) { id view = WCZZValue(self,@"redEnvelopesDetailView"); if ([view isKindOfClass:[UIView class]]) WCZZApplyRedDetail(view,info); } }); }
+- (void)OnQueryRedEnvelopesDetailRequest:(id)arg1 Error:(id)arg2 { %orig(arg1, arg2); if (!WCZZBool(WCZZRedDetailKey, YES)) return; dispatch_async(dispatch_get_main_queue(), ^{ id info = WCZZFindDetailInfoInObject(self,0); if (!info) info = WCZZFindDetailInfoInObject(arg1,0); if (info) { id view = WCZZValue(self,@"redEnvelopesDetailView"); if ([view isKindOfClass:[UIView class]]) WCZZApplyRedDetail(view,info); } }); }
 - (void)closeAnimationWindowAndShowDetailView:(id)arg1 { %orig(arg1); if (!WCZZBool(WCZZRedDetailKey, YES)) return; dispatch_async(dispatch_get_main_queue(), ^{ id info = WCZZFindDetailInfoInObject(self,0); if (!info) info = WCZZFindDetailInfoInObject(arg1,0); id view = WCZZValue(self,@"redEnvelopesDetailView"); if (info && [view isKindOfClass:[UIView class]]) WCZZApplyRedDetail(view,info); }); }
 %end
 
