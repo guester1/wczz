@@ -227,8 +227,8 @@ static NSArray *WCZZFilteredVisibleSessions(id logic) {
     %orig;
 }
 
-- (void)onSessionRebuildEnd { %orig; dispatch_async(dispatch_get_main_queue(), ^{ [[NSNotificationCenter defaultCenter] postNotificationName:@"wczz.session.changed" object:nil]; }); }
-- (void)onMainSessionReload { %orig; dispatch_async(dispatch_get_main_queue(), ^{ [[NSNotificationCenter defaultCenter] postNotificationName:@"wczz.session.changed" object:nil]; }); }
+- (void)onSessionRebuildEnd { dispatch_async(dispatch_get_main_queue(), ^{ [[NSNotificationCenter defaultCenter] postNotificationName:@"wczz.session.changed" object:nil]; }); }
+- (void)onMainSessionReload { dispatch_async(dispatch_get_main_queue(), ^{ [[NSNotificationCenter defaultCenter] postNotificationName:@"wczz.session.changed" object:nil]; }); }
 %end
 
 %hook NewMainFrameViewController
