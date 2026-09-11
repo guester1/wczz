@@ -470,7 +470,6 @@ static void WCZZRegisterPluginManager(void) {
 
 %ctor {
     NSLog(@"[wczz] loaded into WeChat");
-    WCZZInstallRedDetailHooks();
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     if ([d objectForKey:WCZZPluginEnabledKey] == nil) [d setBool:YES forKey:WCZZPluginEnabledKey];
     if ([d objectForKey:WCZZGroupEnabledKey] == nil) [d setBool:YES forKey:WCZZGroupEnabledKey];
