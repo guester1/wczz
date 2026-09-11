@@ -18,6 +18,9 @@ jobs:
         git clone --recursive https://github.com/theos/theos.git $THEOS
         echo "THEOS=$THEOS" >> $GITHUB_ENV
 
+- name: Install Dependencies
+        run: |
+          brew install ldid dpkg make
     - name: Build Tweak
       run: |
         make package
