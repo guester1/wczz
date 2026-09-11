@@ -37,11 +37,11 @@ static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
         @synchronized (g_foldedSessionsList) {
             for (MMSessionInfo *info in g_foldedSessionsList) {
                 if ([info respondsToSelector:@selector(m_uUnReadCount)]) {
-                    totalUnread += info.m_uUnReadCount;
+                    totalUnread += (unsigned int)info.m_uUnReadCount;
                 }
                 if ([info respondsToSelector:@selector(m_uLastMsgTime)]) {
-                    if (info.m_uLastMsgTime > maxTime) {
-                        maxTime = info.m_uLastMsgTime;
+                    if ((unsigned int)info.m_uLastMsgTime > maxTime) {
+                        maxTime = (unsigned int)info.m_uLastMsgTime;
                     }
                 }
             }
@@ -110,14 +110,18 @@ static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
     if ([self respondsToSelector:@selector(m_mainFrameLogicController)]) {
         id logicController = [self valueForKey:@"m_mainFrameLogicController"];
         if (logicController && [logicController respondsToSelector:@selector(getSessionInfoForIndex:)]) {
-            MMSessionInfo *session = [logicController getSessionInfoForIndex:(unsigned int)indexPath.row];
+            // 使用 safe invocation / performSelector 规避 id 指针的方法隐式声明报错
+            MMSessionInfo *session = nil;
+            if ([logicController respondsToSelector:@selector(getSessionInfoForIndex:)]) {
+                session = ((MMSessionInfo *(*)(id, SEL, unsigned int))objc_msgSend)(logicController, @selector(getSessionInfoForIndex:), (unsigned int)indexPath.row);
+            }
             
             // 自定义“群聊助手”Cell 样式
             if (session && [session.m_nsUserName isEqualToString:kWCZZGroupHelperID]) {
                 cell.textLabel.text = @"群聊助手";
                 
                 if (session.m_uUnReadCount > 0) {
-                    cell.detailTextLabel.text = [NSString stringWithFormat:@"[%u条未读消息]", session.m_uUnReadCount];
+                    cell.detailTextLabel.text = [NSString stringWithFormat:@"[%lu条未读消息]", (unsigned long)session.m_uUnReadCount];
                     cell.detailTextLabel.textColor = [UIColor systemRedColor];
                 } else {
                     NSUInteger count = g_foldedSessionsList ? g_foldedSessionsList.count : 0;
