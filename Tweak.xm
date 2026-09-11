@@ -395,29 +395,38 @@ static void WCZZOpenGroupHelperFrom(id presenter) {
         : presenterVC.navigationController;
     if (!nav) return;
     WCZZGroupHelperViewController *vc = [WCZZGroupHelperViewController new];
-    vc.mainController = [presenterVC isKindOfClass:[NewMainFrameViewController class]] ? presenterVC : nav.topViewController;
+    Class mainClass = objc_getClass("NewMainFrameViewController");
+    vc.mainController = (mainClass && [presenterVC isKindOfClass:mainClass]) ? presenterVC : nav.topViewController;
     [nav pushViewController:vc animated:YES];
 }
 
 %hook NewMainFrameViewController
 
-- (long long)logicGetCountForSection:(long long)section {
-    long long original = %orig(section);
+/*
+ * The table view is the authoritative data-source boundary in this WeChat
+ * build.  We therefore change the row count here, while the three logic
+ * methods below translate the synthetic rows back to WeChat's original
+ * session indexes.  We intentionally do NOT hook cellForRowAtIndexPath:
+ * because doing both layers can translate an already-translated index twice.
+ */
+- (long long)tableView:(id)tableView numberOfRowsInSection:(long long)section {
+    long long original = %orig(tableView, section);
     if (section != 0 || !WCZZPluginEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return original;
 
     id logic = WCZZValue(self, @"m_mainFrameLogicController");
     NSArray *source = WCZZSessionsFromLogic(logic);
-    if (!source.count) return original;
-
     NSUInteger groupCount = WCZZFoldedSessionsFromLogic(logic).count;
-    if (!groupCount) return original;
+    if (!source.count || !groupCount) return original;
 
-    // Preserve WeChat's own count when our session snapshot is not the same
-    // size. This prevents search/rebuild states from producing bad indexes.
-    if ((long long)source.count != original && original > 0) {
-        return original - MIN((NSUInteger)original, groupCount) + 1;
-    }
-    return (long long)(source.count - groupCount + 1);
+    /*
+     * Use WeChat's own row count as the base.  When our snapshot matches the
+     * visible source, remove exactly the folded rows and add one helper row.
+     * During a transient rebuild/search mismatch, use the original count
+     * rather than risking an invalid index path.
+     */
+    if ((long long)source.count != original) return original;
+    NSUInteger folded = MIN(groupCount, (NSUInteger)original);
+    return original - (long long)folded + 1;
 }
 
 - (id)logicGetCellDataAtIndexPath:(id)indexPath {
@@ -432,10 +441,15 @@ static void WCZZOpenGroupHelperFrom(id presenter) {
     NSUInteger groupCount = WCZZFoldedSessionsFromLogic(logic).count;
     if (!groupCount || !source.count) return %orig(indexPath);
 
-    NSUInteger row = [indexPath respondsToSelector:@selector(row)] ? (NSUInteger)[indexPath row] : NSUIntegerMax;
+    NSUInteger row = [indexPath respondsToSelector:@selector(row)]
+        ? (NSUInteger)[indexPath row] : NSUIntegerMax;
     BOOL top = WCZZBool(WCZZGroupTopKey, YES);
     BOOL helperRow = (top && row == 0) || (!top && row == visible.count);
-    if (helperRow) return WCZZMakeGroupHelperCellData(groupCount) ?: %orig(indexPath);
+    if (helperRow) {
+        id fake = WCZZMakeGroupHelperCellData(groupCount);
+        if (fake) return fake;
+        return %orig(indexPath);
+    }
 
     NSUInteger visibleIndex = top ? (row ? row - 1 : NSUIntegerMax) : row;
     if (visibleIndex >= visible.count) return %orig(indexPath);
@@ -443,8 +457,11 @@ static void WCZZOpenGroupHelperFrom(id presenter) {
     id session = visible[visibleIndex];
     NSIndexPath *originalIndexPath = WCZZOriginalIndexPathForSession(source, session);
     if (originalIndexPath) return %orig(originalIndexPath);
-    return WCZZCellDataForSession(logic, session) ?: %orig(indexPath);
+
+    id data = WCZZCellDataForSession(logic, session);
+    return data ?: %orig(indexPath);
 }
+
 - (id)logicGetSessionAtIndexPath:(id)indexPath {
     if (!WCZZPluginEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES) ||
         ![indexPath respondsToSelector:@selector(section)] || [indexPath section] != 0) {
@@ -457,7 +474,8 @@ static void WCZZOpenGroupHelperFrom(id presenter) {
     NSUInteger groupCount = WCZZFoldedSessionsFromLogic(logic).count;
     if (!groupCount || !source.count) return %orig(indexPath);
 
-    NSUInteger row = [indexPath respondsToSelector:@selector(row)] ? (NSUInteger)[indexPath row] : NSUIntegerMax;
+    NSUInteger row = [indexPath respondsToSelector:@selector(row)]
+        ? (NSUInteger)[indexPath row] : NSUIntegerMax;
     BOOL top = WCZZBool(WCZZGroupTopKey, YES);
     BOOL helperRow = (top && row == 0) || (!top && row == visible.count);
     if (helperRow) return nil;
@@ -470,44 +488,16 @@ static void WCZZOpenGroupHelperFrom(id presenter) {
     if (originalIndexPath) return %orig(originalIndexPath);
     return session;
 }
-- (id)tableView:(id)tableView cellForRowAtIndexPath:(id)indexPath {
-    if (WCZZPluginEnabled() && WCZZBool(WCZZGroupEnabledKey, YES) &&
-        [indexPath respondsToSelector:@selector(section)] && [indexPath section] == 0) {
-        id logic = WCZZValue(self, @"m_mainFrameLogicController");
-        NSArray *visible = WCZZVisibleMainSessions(logic);
-        NSUInteger groupCount = WCZZFoldedSessionsFromLogic(logic).count;
-        NSUInteger row = [indexPath respondsToSelector:@selector(row)] ? (NSUInteger)[indexPath row] : NSUIntegerMax;
-        BOOL top = WCZZBool(WCZZGroupTopKey, YES);
-        BOOL isHelper = groupCount && ((top && row == 0) || (!top && row == visible.count));
-        if (isHelper) {
-            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"wczz.main.helper"];
-            if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"wczz.main.helper"];
-            cell.textLabel.text = @"群助手";
-            cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个群聊", (unsigned long)groupCount];
-            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-            return cell;
-        }
-        NSArray *source = WCZZSessionsFromLogic(logic);
-        if (groupCount && source.count) {
-            NSUInteger visibleIndex = top ? (row ? row - 1 : NSUIntegerMax) : row;
-            if (visibleIndex < visible.count) {
-                NSIndexPath *originalIndexPath = WCZZOriginalIndexPathForSession(source, visible[visibleIndex]);
-                if (originalIndexPath) return %orig(tableView, originalIndexPath);
-            }
-        }
-    }
-    return %orig(tableView, indexPath);
-}
 
 - (void)tableView:(id)tableView didSelectRowAtIndexPath:(id)indexPath {
     if (WCZZPluginEnabled() && WCZZBool(WCZZGroupEnabledKey, YES) &&
         [indexPath respondsToSelector:@selector(section)] && [indexPath section] == 0) {
         id logic = WCZZValue(self, @"m_mainFrameLogicController");
-        NSArray *source = WCZZSessionsFromLogic(logic);
         NSArray *visible = WCZZVisibleMainSessions(logic);
         NSUInteger groupCount = WCZZFoldedSessionsFromLogic(logic).count;
-        if (groupCount && source.count) {
-            NSUInteger row = [indexPath respondsToSelector:@selector(row)] ? (NSUInteger)[indexPath row] : NSUIntegerMax;
+        if (groupCount) {
+            NSUInteger row = [indexPath respondsToSelector:@selector(row)]
+                ? (NSUInteger)[indexPath row] : NSUIntegerMax;
             BOOL top = WCZZBool(WCZZGroupTopKey, YES);
             BOOL isHelper = (top && row == 0) || (!top && row == visible.count);
             if (isHelper) {
@@ -515,16 +505,14 @@ static void WCZZOpenGroupHelperFrom(id presenter) {
                 WCZZOpenGroupHelperFrom(self);
                 return;
             }
-            NSUInteger visibleIndex = top ? (row ? row - 1 : NSUIntegerMax) : row;
-            if (visibleIndex < visible.count) {
-                NSIndexPath *originalIndexPath = WCZZOriginalIndexPathForSession(source, visible[visibleIndex]);
-                if (originalIndexPath) {
-                    %orig(tableView, originalIndexPath);
-                    return;
-                }
-            }
         }
     }
+
+    /*
+     * For normal rows keep WeChat's original indexPath untouched. Its own
+     * selection path will call logicGetSessionAtIndexPath:, which is the
+     * single place where wczz performs the row translation.
+     */
     %orig(tableView, indexPath);
 }
 %end

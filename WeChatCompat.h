@@ -16,10 +16,11 @@
 - (long long)logicGetCountForSection:(long long)section;
 - (id)logicGetCellDataAtIndexPath:(id)indexPath;
 - (id)logicGetSessionAtIndexPath:(id)indexPath;
-- (void)logicUpdateSession:(id)session;
 - (void)onLogicOpenSession:(id)session;
 - (void)reloadSessions;
 - (void)tableView:(id)tableView didSelectRowAtIndexPath:(id)indexPath;
+- (id)tableView:(id)tableView cellForRowAtIndexPath:(id)indexPath;
+- (long long)tableView:(id)tableView numberOfRowsInSection:(long long)section;
 @end
 
 @interface WCRedEnvelopesRedEnvelopesDetailViewController : UIViewController

@@ -15,7 +15,7 @@ MiYou 3.9-5 只用于静态行为/字符串证据；WeChat.zip 只用于当前�
 
 主列表适配集中在当前微信 `NewMainFrameViewController` 的逻辑/表格路径：
 
-- `logicGetCountForSection:`
+- `tableView:numberOfRowsInSection:`
 - `logicGetCellDataAtIndexPath:`
 - `logicGetSessionAtIndexPath:`
 - `tableView:cellForRowAtIndexPath:`
@@ -64,6 +64,6 @@ Target: iOS 15+, rootless, arm64/arm64e。
 
 ## 编译前审计
 
-本版本已针对上一版出现的 `id.navigationController` 编译错误做了静态修正，并避免使用不存在的 `indexPathOfSessionUserName:` selector；原始 session index 由 wczz 自己扫描 `m_arrFilteredSession` 得到。
+本版本已针对上一版出现的 `id.navigationController` 编译错误做了静态修正，并避免使用不存在的 `indexPathOfSessionUserName:` selector；原始 session index 由 wczz 自己扫描 `m_arrFilteredSession` 得到，并只在 `logicGetCellDataAtIndexPath:` / `logicGetSessionAtIndexPath:` 这一层转换，避免 table cell 层重复转换。
 
 同时移除了会主动触发 `reloadSessions` 的旧一键已读路径和 `logicUpdateSession` / `onSessionRebuildEnd` reload 逻辑。
