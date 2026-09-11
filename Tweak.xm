@@ -73,6 +73,12 @@ static BOOL WCZZShouldFoldSession(id session) {
 }
 
 static NSArray *WCZZSessionsFromLogic(id logic) {
+    if (!logic) return @[];
+    SEL s = NSSelectorFromString(@"getLastFrontSessionArray");
+    if ([logic respondsToSelector:s]) {
+        id a = ((id (*)(id, SEL))objc_msgSend)(logic, s);
+        if ([a isKindOfClass:[NSArray class]] && a.count) return a;
+    }
     id a = WCZZValue(logic, @"m_frontSessionArray");
     if (![a isKindOfClass:[NSArray class]]) a = WCZZValue(logic, @"m_arrFilteredSession");
     return [a isKindOfClass:[NSArray class]] ? a : @[];
@@ -277,6 +283,50 @@ static void WCZZMarkAllGroupSessionsRead(id logic) {
     return %orig(index);
 }
 
+- (unsigned long long)getVisibleSessionCount {
+    if (!WCZZPluginEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return %orig;
+    NSArray *visible = WCZZFilteredVisibleSessions(self);
+    if (visible.count) return (unsigned long long)visible.count;
+    return %orig;
+}
+
+- (unsigned long long)getSessionCount {
+    if (!WCZZPluginEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return %orig;
+    NSArray *visible = WCZZFilteredVisibleSessions(self);
+    if (visible.count) return (unsigned long long)visible.count;
+    return %orig;
+}
+
+- (id)getSessionInfoAtIndexPath:(id)indexPath {
+    if (WCZZPluginEnabled() && WCZZBool(WCZZGroupEnabledKey, YES)) {
+        NSArray *visible = WCZZFilteredVisibleSessions(self);
+        NSUInteger row = [indexPath respondsToSelector:@selector(row)] ? (NSUInteger)[indexPath row] : NSUIntegerMax;
+        if (row < visible.count) return visible[row];
+    }
+    return %orig(indexPath);
+}
+
+- (id)getSessionBaseInfoAtIndexPath:(id)indexPath {
+    if (WCZZPluginEnabled() && WCZZBool(WCZZGroupEnabledKey, YES)) {
+        NSArray *visible = WCZZFilteredVisibleSessions(self);
+        NSUInteger row = [indexPath respondsToSelector:@selector(row)] ? (NSUInteger)[indexPath row] : NSUIntegerMax;
+        if (row < visible.count) return visible[row];
+    }
+    return %orig(indexPath);
+}
+
+- (id)getCellDataAtIndexPath:(id)indexPath {
+    if (WCZZPluginEnabled() && WCZZBool(WCZZGroupEnabledKey, YES)) {
+        NSUInteger row = [indexPath respondsToSelector:@selector(row)] ? (NSUInteger)[indexPath row] : NSUIntegerMax;
+        NSArray *visible = WCZZFilteredVisibleSessions(self);
+        if (row < visible.count) {
+            id data = %orig(indexPath);
+            return data;
+        }
+    }
+    return %orig(indexPath);
+}
+
 - (long long)getFakeCellCount {
     if (!WCZZPluginEnabled()) return %orig;
     long long original = %orig;
@@ -410,19 +460,16 @@ static void WCZZRegisterPluginManager(void) {
     if (!mgrClass) return;
     SEL shared = NSSelectorFromString(@"sharedInstance");
     SEL regController = NSSelectorFromString(@"registerControllerWithTitle:version:controller:");
-    SEL regSwitch = NSSelectorFromString(@"registerSwitchWithTitle:key:");
     if (![mgrClass respondsToSelector:shared]) return;
     id mgr = ((id (*)(id, SEL))objc_msgSend)(mgrClass, shared);
     if (!mgr) return;
     if ([mgr respondsToSelector:regController]) {
         ((void (*)(id, SEL, id, id, id))objc_msgSend)(mgr, regController, @"wczz", @"1.0-0", @"WCZZSettingsViewController");
     }
-    if ([mgr respondsToSelector:regSwitch]) {
-        ((void (*)(id, SEL, id, id))objc_msgSend)(mgr, regSwitch, @"启用 wczz", WCZZPluginEnabledKey);
-    }
 }
 
 %ctor {
+    NSLog(@"[wczz] loaded into WeChat");
     WCZZInstallRedDetailHooks();
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     if ([d objectForKey:WCZZPluginEnabledKey] == nil) [d setBool:YES forKey:WCZZPluginEnabledKey];
@@ -431,16 +478,11 @@ static void WCZZRegisterPluginManager(void) {
     if ([d objectForKey:WCZZRedDetailKey] == nil) [d setBool:YES forKey:WCZZRedDetailKey];
     if ([d objectForKey:WCZZCommonRoomsKey] == nil) [d setObject:@[] forKey:WCZZCommonRoomsKey];
     [d synchronize];
-    dispatch_async(dispatch_get_main_queue(), ^{ WCZZRegisterPluginManager(); });
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WCZZRegisterPluginManager();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCZZRegisterPluginManager(); });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCZZRegisterPluginManager(); });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCZZRegisterPluginManager(); });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCZZRegisterPluginManager(); });
+    });
 }
-
-#pragma mark - Settings entry
-%hook NewSettingViewController
-- (void)viewDidLoad {
-    %orig;
-    UIBarButtonItem *item = [[UIBarButtonItem alloc] initWithTitle:@"wczz" style:UIBarButtonItemStylePlain target:self action:@selector(wczzOpenSettings)];
-    self.navigationItem.rightBarButtonItem = item;
-}
-%new
-- (void)wczzOpenSettings { [self.navigationController pushViewController:[WCZZSettingsViewController new] animated:YES]; }
-%end

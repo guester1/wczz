@@ -23,3 +23,11 @@ make clean package FINALPACKAGE=1
 ```
 
 Rootless packaging is selected by `THEOS_PACKAGE_SCHEME=rootless` in the Makefile.
+
+
+## v2 排查修复
+- 强化主会话列表来源：优先使用 `getLastFrontSessionArray`。
+- 增加当前微信会话列表相关入口的兼容 Hook，避免只 Hook filtered/fake cell 导致群助手不进入实际列表数据路径。
+- 插件管理只注册 `wczz` 设置控制器，不注册独立总开关。
+- 不再向微信原生设置页添加右上角入口。
+- 增加启动日志 `[wczz] loaded into WeChat`，便于确认 dylib 是否真正注入。
