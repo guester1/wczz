@@ -1,33 +1,35 @@
 # wczz 1.0-0
 
-Rootless Theos tweak for WeChat 8.0.78-era headers.
+独立的 WeChat tweak，只实现两个目标功能：
 
-## Included behavior
-- MiYou-derived group helper concept: chat-room sessions are folded into a synthetic “群消息” row while configured “常用群” remain in the main list.
-- Group helper page with only two `+` actions: `一键已读` and `管理常用群`.
-- One-click read uses the current WeChat `MMContext -> MMServiceCenter -> MMNewSessionMgr -> ChangeSessionUnReadCount:to:` path rather than MiYou's obsolete/private selector.
-- MiYou-derived red-detail enhancement adapted to current `WCRedEnvelopesReceiveControlLogic` and `WCRedEnvelopesDetailInfo` fields.
-- Plugin-manager registration via `WCPluginsMgr`, including a master enable switch.
-- No message-clear or delete actions are registered in the group-helper menu.
+- 群助手：收纳普通群聊、群助手入口、置顶、常用群、一键已读。
+- 红包详情：在红包详情页显示总金额/总人数/已领取人数/已领取金额。
 
-## Important
-The source is a behavioral reimplementation based on static analysis of the supplied MiYou binary and adaptation to the supplied WeChat headers. It is not byte-for-byte recovered original source.
+## 独立性
 
-The supplied crash log's crashing frame was in `MiYou.dylib` (`addIMBehaviorContactOp:contactOpType:`); `wczz.dylib` was absent from that process's loaded-image list, so that crash cannot be attributed to wczz.
+wczz 不依赖 MiYou 运行时，也不依赖 WCRefine/WCR。MiYou 3.9-5 仅作为行为/字符串证据来源；WeChat.zip 仅用于当前微信类和方法适配。
+
+## 插件管理器
+
+只注册一个 `WCZZSettingsViewController` 控制器入口，不注册插件管理器独立开关，也不修改微信原生设置入口。
+
+设置页：
+
+1. 启用 wczz
+2. 开启群助手
+3. 置顶群助手
+4. 红包详情
+5. 常用群
 
 ## Build
-Install Theos and run:
 
-```sh
-make clean package FINALPACKAGE=1
+```bash
+make clean
+make package
 ```
 
-Rootless packaging is selected by `THEOS_PACKAGE_SCHEME=rootless` in the Makefile.
+Target: iOS 15+, rootless, arm64/arm64e。
 
+## Important
 
-## v2 排查修复
-- 强化主会话列表来源：优先使用 `getLastFrontSessionArray`。
-- 增加当前微信会话列表相关入口的兼容 Hook，避免只 Hook filtered/fake cell 导致群助手不进入实际列表数据路径。
-- 插件管理只注册 `wczz` 设置控制器，不注册独立总开关。
-- 不再向微信原生设置页添加右上角入口。
-- 增加启动日志 `[wczz] loaded into WeChat`，便于确认 dylib 是否真正注入。
+本源码没有在真实设备上完成运行时验证。编译通过不等于特定微信版本一定命中所有运行时路径；v6 将主列表适配集中在 `NewMainFrameViewController` 的 `logicGetCountForSection:` / `logicGetCellDataAtIndexPath:` / `logicGetSessionAtIndexPath:` / `tableView:didSelectRowAtIndexPath:`，避免之前同时修改多个内部 session count/index API 导致的行号错位。

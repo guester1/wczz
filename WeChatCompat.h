@@ -2,25 +2,24 @@
 #import <Foundation/Foundation.h>
 
 @interface MainFrameLogicController : NSObject
-- (unsigned long long)getFilteredSessionCount;
-- (id)getFilteredSessionInfo:(unsigned int)index;
-- (id)getSessionBaseInfoAtIndexPath:(id)indexPath;
-- (id)getSessionInfoAtIndexPath:(id)indexPath;
-- (unsigned int)getVisibleSessionCount;
-- (long long)getSessionCountForSection:(long long)section;
-- (unsigned int)getSessionCount;
 - (id)getCellDataByUsrName:(id)username;
-- (long long)getFakeCellCount;
-- (id)getFakeCellData:(unsigned int)index;
-- (void)onDidSelectCellAt:(id)indexPath;
 - (void)onSessionRebuildEnd;
 @end
 
+@interface MMNewSessionMgr : NSObject
+- (id)GetSessionInfoList;
+- (id)GetSessionByUserName:(id)username;
+- (void)ChangeSessionUnReadCount:(id)username to:(unsigned int)count;
+@end
+
 @interface NewMainFrameViewController : UIViewController
-- (void)reloadSessions;
-- (void)onLogicOpenSession:(id)session;
-- (void)logicUpdateSession:(id)session;
+- (long long)logicGetCountForSection:(long long)section;
+- (id)logicGetCellDataAtIndexPath:(id)indexPath;
 - (id)logicGetSessionAtIndexPath:(id)indexPath;
+- (void)logicUpdateSession:(id)session;
+- (void)onLogicOpenSession:(id)session;
+- (void)reloadSessions;
+- (void)tableView:(id)tableView didSelectRowAtIndexPath:(id)indexPath;
 @end
 
 @interface WCRedEnvelopesRedEnvelopesDetailViewController : UIViewController
