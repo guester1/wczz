@@ -401,7 +401,8 @@ static BOOL WCZZHasFoldedRows(NSArray *rows, long long originalCount) {
 }
 
 - (id)tableView:(id)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (![indexPath isKindOfClass:[NSIndexPath class]] || indexPath.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) {
+    NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
+    if (!ip || ip.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) {
         return %orig(tableView, indexPath);
     }
     NSArray *rows = WCZZGetRowsCache(self);
@@ -412,7 +413,8 @@ static BOOL WCZZHasFoldedRows(NSArray *rows, long long originalCount) {
     }
     if (![rows isKindOfClass:[NSArray class]] || rows.count == 0 || !WCZZHasFoldedRows(rows, original)) return %orig(tableView, indexPath);
     BOOL top = WCZZBool(WCZZGroupTopKey, YES);
-    BOOL helper = (top && indexPath.row == 0) || (!top && indexPath.row == rows.count);
+    NSInteger row = ip.row;
+    BOOL helper = (top && row == 0) || (!top && row == (NSInteger)rows.count);
     if (helper) {
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"wczz.helper.fallback"];
         if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"wczz.helper.fallback"];
@@ -421,14 +423,15 @@ static BOOL WCZZHasFoldedRows(NSArray *rows, long long originalCount) {
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         return cell;
     }
-    NSUInteger vi = top ? (indexPath.row > 0 ? indexPath.row - 1 : NSUIntegerMax) : indexPath.row;
+    NSUInteger vi = top ? (row > 0 ? (NSUInteger)row - 1 : NSUIntegerMax) : (NSUInteger)row;
     if (vi >= rows.count) return %orig(tableView, indexPath);
     NSIndexPath *origIP = [NSIndexPath indexPathForRow:[rows[vi] integerValue] inSection:0];
     return %orig(tableView, origIP);
 }
 
 - (void)tableView:(id)tableView didSelectRowAtIndexPath:(id)indexPath {
-    if ([indexPath isKindOfClass:[NSIndexPath class]] && indexPath.section == 0 && WCZZEnabled() && WCZZBool(WCZZGroupEnabledKey, YES)) {
+    NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
+    if (ip && ip.section == 0 && WCZZEnabled() && WCZZBool(WCZZGroupEnabledKey, YES)) {
         NSArray *rows = WCZZGetRowsCache(self);
         long long original = WCZZOriginalSessionCount(self, 0, -1);
         if (![rows isKindOfClass:[NSArray class]] || original <= 0) {
@@ -437,7 +440,8 @@ static BOOL WCZZHasFoldedRows(NSArray *rows, long long originalCount) {
         }
         if (WCZZHasFoldedRows(rows, original)) {
             BOOL top = WCZZBool(WCZZGroupTopKey, YES);
-            BOOL helper = (top && indexPath.row == 0) || (!top && indexPath.row == rows.count);
+            NSInteger row = ip.row;
+            BOOL helper = (top && row == 0) || (!top && row == (NSInteger)rows.count);
             if (helper) {
                 [(UITableView *)tableView deselectRowAtIndexPath:indexPath animated:YES];
                 WCZZGroupHelperViewController *vc = [WCZZGroupHelperViewController new];
@@ -446,7 +450,7 @@ static BOOL WCZZHasFoldedRows(NSArray *rows, long long originalCount) {
                 if (nav) [nav pushViewController:vc animated:YES];
                 return;
             }
-            NSUInteger vi = top ? (indexPath.row > 0 ? indexPath.row - 1 : NSUIntegerMax) : indexPath.row;
+            NSUInteger vi = top ? (row > 0 ? (NSUInteger)row - 1 : NSUIntegerMax) : (NSUInteger)row;
             if (vi < rows.count) {
                 NSIndexPath *origIP = [NSIndexPath indexPathForRow:[rows[vi] integerValue] inSection:0];
                 %orig(tableView, origIP);
