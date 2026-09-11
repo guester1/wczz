@@ -382,6 +382,7 @@ static BOOL WCZZHasFoldedRows(NSArray *rows, long long originalCount) {
     return [rows isKindOfClass:[NSArray class]] && originalCount > 0 && rows.count < (NSUInteger)originalCount;
 }
 
+%group WCZZMainHooks
 %hook NewMainFrameViewController
 - (long long)tableView:(id)tableView numberOfRowsInSection:(long long)section {
     long long original = %orig(tableView, section);
@@ -461,6 +462,7 @@ static BOOL WCZZHasFoldedRows(NSArray *rows, long long originalCount) {
     %orig(tableView, indexPath);
 }
 %end
+%end
 
 #pragma mark - Red detail
 
@@ -477,6 +479,7 @@ static void WCZZApplyRedDetail(id vc) {
     ((UILabel *)labelObj).text = [NSString stringWithFormat:@"共 %.2f 元 · %lld 人 · 已领取 %lld 人 / %.2f 元", totalAmount / 100.0, totalNum, recNum, recAmount / 100.0];
 }
 
+%group WCZZRedHooks
 %hook WCRedEnvelopesRedEnvelopesDetailViewController
 - (void)refreshViewWithData:(id)data {
     %orig(data);
@@ -491,6 +494,7 @@ static void WCZZApplyRedDetail(id vc) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCZZApplyRedDetail(self); });
     });
 }
+%end
 %end
 
 #pragma mark - Plugin manager
@@ -508,6 +512,32 @@ static void WCZZRegisterPlugin(void) {
     WCZZRegistered = YES;
 }
 
+static BOOL WCZZMainHooksStarted = NO;
+static BOOL WCZZRedHooksStarted = NO;
+
+static void WCZZInstallHooksWhenReady(void) {
+    if (WCZZMainHooksStarted && WCZZRedHooksStarted) {
+        WCZZRegisterPlugin();
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!WCZZMainHooksStarted && objc_getClass("NewMainFrameViewController")) {
+            %init(WCZZMainHooks);
+            WCZZMainHooksStarted = YES;
+        }
+        if (!WCZZRedHooksStarted && objc_getClass("WCRedEnvelopesRedEnvelopesDetailViewController")) {
+            %init(WCZZRedHooks);
+            WCZZRedHooksStarted = YES;
+        }
+        WCZZRegisterPlugin();
+        if (!WCZZMainHooksStarted || !WCZZRedHooksStarted || !WCZZRegistered) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                WCZZInstallHooksWhenReady();
+            });
+        }
+    });
+}
+
 %ctor {
     @autoreleasepool {
         NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
@@ -517,8 +547,8 @@ static void WCZZRegisterPlugin(void) {
         if ([d objectForKey:WCZZRedDetailKey] == nil) [d setBool:YES forKey:WCZZRedDetailKey];
         if ([d objectForKey:WCZZCommonRoomsKey] == nil) [d setObject:@[] forKey:WCZZCommonRoomsKey];
         [d synchronize];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            WCZZRegisterPlugin();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            WCZZInstallHooksWhenReady();
         });
     }
 }
