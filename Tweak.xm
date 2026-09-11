@@ -657,7 +657,10 @@ static id WCZZBuildHelperCellData(id self) {
             return;
         }
         NSIndexPath *origIP = WCZZOriginalIPForLogicRow(self, ip);
-        if (origIP) { %orig(origIP); return; }
+        if (origIP) {
+            %orig;
+            return;
+        }
     }
     %orig(indexPath);
 }
