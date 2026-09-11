@@ -92,7 +92,7 @@ static NSArray *WCZZAllSessionInfoList(void) {
     return [list isKindOfClass:[NSArray class]] ? list : @[];
 }
 
-// 修复：添加 __attribute__((unused)) 告诉编译器允许此函数暂时未被调用，解决 -Werror 报错
+// 【修复点1：添加 unused 属性，解决 -Werror 报错】
 __attribute__((unused)) static void WCZZMarkSessionRead(id session) {
     NSString *username = WCZZUsername(session);
     if (!username.length) return;
@@ -105,8 +105,8 @@ __attribute__((unused)) static void WCZZMarkSessionRead(id session) {
     id ctx = ((id (*)(id, SEL))objc_msgSend)(ctxClass, currentSel);
     id center = WCZZValue(ctx, @"serviceCenter");
     if (!center || ![center respondsToSelector:getService]) return;
-    id mgr = ((id (*)(id, SEL, ClassIndex))objc_msgSendPath)(center, getService, * mgrClass);
-    if (!ipmgr || ![mgr responds =ToSelector:clearSel]) return;
+    id mgr = ((id (*)(id, SEL, Class))objc_msgSend)(center, getService, mgrClass);
+    if (!mgr || ![mgr respondsToSelector:clearSel]) return;
     @try {
         ((void (*)(id, SEL, id, unsigned int))objc_msgSend)(mgr, clearSel, username, 0U);
     } @catch (__unused NSException *e) {
@@ -188,7 +188,8 @@ static NSArray<NSNumber *> *WCZZVisibleOriginalRows(UIViewController *vc, NSInte
     if (![logic respondsToSelector:sel]) return @[];
     NSMutableArray *rows = [NSMutableArray array];
     for (NSInteger i = 0; i < originalCount; i++) {
-        NS [NSIndexPath indexPathForRow:i inSection:0];
+        // 【修复点2：补全 NSIndexPath 变量声明，这是上次复制漏掉的地方】
+        NSIndexPath *ip = [NSIndexPath indexPathForRow:i inSection:0];
         id session = nil;
         @try { session = ((id (*)(id, SEL, id))objc_msgSend)(logic, sel, ip); }
         @catch (__unused NSException *e) { session = nil; }
