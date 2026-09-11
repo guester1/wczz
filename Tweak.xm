@@ -1,10 +1,6 @@
 #import <UIKit/UIKit.h>
 #import "WeChatCompat.h"
 
-// =============================================================================
-// 轻量接口声明（补充类型定义，避免 Clang 报错）
-// =============================================================================
-
 @interface MMSessionInfo : NSObject
 @property (nonatomic, retain) NSString *m_nsUserName;
 @property (nonatomic, assign) unsigned int m_uUnReadCount;
@@ -20,14 +16,9 @@
 @property (nonatomic, strong) MainFrameLogicController *m_mainFrameLogicController;
 @end
 
-// =============================================================================
-// 全局静态变量
-// =============================================================================
-
 static NSString *const kWCZZHelperUserName = @"wczz_group_helper_session";
 static NSMutableArray<MMSessionInfo *> *g_foldedSessions = nil;
 
-// 校验群聊 Session
 static BOOL WCZZIsFoldedGroupSession(MMSessionInfo *session) {
     if (!session) return NO;
     if ([session respondsToSelector:@selector(m_nsUserName)]) {
@@ -39,7 +30,6 @@ static BOOL WCZZIsFoldedGroupSession(MMSessionInfo *session) {
     return NO;
 }
 
-// 动态获取/创建群助手虚拟 Session
 static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
     static MMSessionInfo *helperSession = nil;
     static dispatch_once_t onceToken;
@@ -79,10 +69,6 @@ static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
     return helperSession;
 }
 
-// =============================================================================
-// 1. 红包功能 Hook (已保留)
-// =============================================================================
-
 %hook WCRedEnvelopesDetailViewController
 
 - (void)viewDidLoad {
@@ -98,10 +84,6 @@ static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
 }
 
 %end
-
-// =============================================================================
-// 2. 群聊助手 - 核心逻辑 Hook (已保留)
-// =============================================================================
 
 %hook MainFrameLogicController
 
@@ -164,10 +146,6 @@ static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
 }
 
 %end
-
-// =============================================================================
-// 3. 群聊助手 - UI 渲染 Hook (已保留)
-// =============================================================================
 
 %hook NewMainFrameViewController
 
