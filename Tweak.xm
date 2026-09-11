@@ -4,6 +4,9 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 
+// wczz 1.0-0
+// Independent implementation. Runtime dependency: WeChat only.
+
 static NSString * const WCZZPluginEnabledKey = @"wczz.plugin.enabled";
 static NSString * const WCZZGroupEnabledKey  = @"wczz.group.enabled";
 static NSString * const WCZZGroupTopKey      = @"wczz.group.top";
@@ -19,6 +22,7 @@ static void WCZZSetBool(NSString *key, BOOL value) {
     [[NSUserDefaults standardUserDefaults] setBool:value forKey:key];
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
+static BOOL WCZZEnabled(void) { return WCZZBool(WCZZPluginEnabledKey, YES); }
 static NSArray *WCZZCommonRooms(void) {
     id v = [[NSUserDefaults standardUserDefaults] objectForKey:WCZZCommonRoomsKey];
     return [v isKindOfClass:[NSArray class]] ? v : @[];
@@ -27,157 +31,490 @@ static void WCZZSetCommonRooms(NSArray *rooms) {
     [[NSUserDefaults standardUserDefaults] setObject:rooms ?: @[] forKey:WCZZCommonRoomsKey];
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
-static BOOL WCZZEnabled(void) { return WCZZBool(WCZZPluginEnabledKey, YES); }
-static id WCZZValue(id obj, NSString *key) { if (!obj) return nil; @try { return [obj valueForKey:key]; } @catch (...) { return nil; } }
-static NSString *WCZZUsername(id session) { id v=WCZZValue(session,@"m_nsUserName"); return [v isKindOfClass:[NSString class]]?v:nil; }
-static id WCZZContact(id session) { return WCZZValue(session,@"m_contact"); }
-static BOOL WCZZIsChatRoom(id contact) {
+static id WCZZValue(id obj, NSString *key) {
+    if (!obj) return nil;
+    @try { return [obj valueForKey:key]; } @catch (__unused NSException *e) { return nil; }
+}
+static NSString *WCZZUsername(id session) {
+    id v = WCZZValue(session, @"m_nsUserName");
+    return [v isKindOfClass:[NSString class]] ? (NSString *)v : nil;
+}
+static id WCZZContact(id session) { return WCZZValue(session, @"m_contact"); }
+static BOOL WCZZIsChatRoom(id contact, NSString *username) {
+    // Do not require m_contact: some session states expose the username first.
+    if ([username isKindOfClass:[NSString class]] && [username hasSuffix:@"@chatroom"]) return YES;
     if (!contact) return NO;
-    Class c=objc_getClass("CContact"); SEL s=NSSelectorFromString(@"IsChatRoomContact:");
-    if (c && [c respondsToSelector:s]) { @try { if (((BOOL(*)(id,SEL,id))objc_msgSend)(c,s,contact)) return YES; } @catch (...) {} }
-    NSString *u=WCZZValue(contact,@"m_nsUsrName");
-    return [u isKindOfClass:[NSString class]] && [u hasSuffix:@"@chatroom"];
+    Class c = objc_getClass("CContact");
+    SEL s = NSSelectorFromString(@"IsChatRoomContact:");
+    if (c && [c respondsToSelector:s]) {
+        @try {
+            if (((BOOL (*)(id, SEL, id))objc_msgSend)(c, s, contact)) return YES;
+        } @catch (__unused NSException *e) {}
+    }
+    id u = WCZZValue(contact, @"m_nsUsrName");
+    return [u isKindOfClass:[NSString class]] && [(NSString *)u hasSuffix:@"@chatroom"];
+}
+static BOOL WCZZIsCommonRoom(NSString *u) {
+    return u.length > 0 && [WCZZCommonRooms() containsObject:u];
 }
 static BOOL WCZZShouldFold(id session) {
-    if (!WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey,YES)) return NO;
-    NSString *u=WCZZUsername(session); id c=WCZZContact(session);
+    if (!WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES) || !session) return NO;
+    NSString *u = WCZZUsername(session);
     if (!u.length) return NO;
-    return WCZZIsChatRoom(c) && ![WCZZCommonRooms() containsObject:u];
+    if (WCZZIsCommonRoom(u)) return NO;
+    return WCZZIsChatRoom(WCZZContact(session), u);
 }
 static NSString *WCZZDisplayName(id contact) {
-    SEL s=NSSelectorFromString(@"getContactDisplayName");
-    if (contact && [contact respondsToSelector:s]) { @try { id n=((id(*)(id,SEL))objc_msgSend)(contact,s); if ([n isKindOfClass:[NSString class]]&&n.length) return n; } @catch (...) {} }
-    id n=WCZZValue(contact,@"m_nsNickName"); return ([n isKindOfClass:[NSString class]]&&n.length)?n:@"群聊";
+    SEL s = NSSelectorFromString(@"getContactDisplayName");
+    if (contact && [contact respondsToSelector:s]) {
+        @try {
+            id n = ((id (*)(id, SEL))objc_msgSend)(contact, s);
+            if ([n isKindOfClass:[NSString class]] && [(NSString *)n length] > 0) return (NSString *)n;
+        } @catch (__unused NSException *e) {}
+    }
+    id n = WCZZValue(contact, @"m_nsNickName");
+    if ([n isKindOfClass:[NSString class]] && [(NSString *)n length] > 0) return (NSString *)n;
+    return @"群聊";
 }
+
+#pragma mark - WeChat Session service
 
 static NSArray *WCZZSessionList(void) {
-    Class ctx=objc_getClass("MMContext"), mgrClass=objc_getClass("MMNewSessionMgr");
-    SEL cur=NSSelectorFromString(@"currentContext"), gs=NSSelectorFromString(@"getService:"), gl=NSSelectorFromString(@"GetSessionInfoList");
-    if (!ctx||!mgrClass||![ctx respondsToSelector:cur]) return @[];
-    id context=((id(*)(id,SEL))objc_msgSend)(ctx,cur); id center=WCZZValue(context,@"serviceCenter");
-    if (!center||![center respondsToSelector:gs]) return @[];
-    id mgr=((id(*)(id,SEL,Class))objc_msgSend)(center,gs,mgrClass);
-    if (!mgr||![mgr respondsToSelector:gl]) return @[];
-    id list=((id(*)(id,SEL))objc_msgSend)(mgr,gl);
-    return [list isKindOfClass:[NSArray class]]?list:@[];
+    Class ctxClass = objc_getClass("MMContext");
+    Class mgrClass = objc_getClass("MMNewSessionMgr");
+    SEL currentSel = NSSelectorFromString(@"currentContext");
+    SEL serviceSel = NSSelectorFromString(@"getService:");
+    SEL listSel = NSSelectorFromString(@"GetSessionInfoList");
+    if (!ctxClass || !mgrClass || ![ctxClass respondsToSelector:currentSel]) return @[];
+    id ctx = ((id (*)(id, SEL))objc_msgSend)(ctxClass, currentSel);
+    id center = WCZZValue(ctx, @"serviceCenter");
+    if (!center || ![center respondsToSelector:serviceSel]) return @[];
+    id mgr = ((id (*)(id, SEL, Class))objc_msgSend)(center, serviceSel, mgrClass);
+    if (!mgr || ![mgr respondsToSelector:listSel]) return @[];
+    id list = ((id (*)(id, SEL))objc_msgSend)(mgr, listSel);
+    return [list isKindOfClass:[NSArray class]] ? (NSArray *)list : @[];
 }
-static void WCZZClearUnreadName(NSString *u) {
-    if (!u.length) return;
-    Class ctx=objc_getClass("MMContext"), mgrClass=objc_getClass("MMNewSessionMgr");
-    SEL cur=NSSelectorFromString(@"currentContext"), gs=NSSelectorFromString(@"getService:"), cl=NSSelectorFromString(@"ChangeSessionUnReadCount:to:");
-    if (!ctx||!mgrClass||![ctx respondsToSelector:cur]) return;
-    id context=((id(*)(id,SEL))objc_msgSend)(ctx,cur); id center=WCZZValue(context,@"serviceCenter");
-    id mgr=(center&&[center respondsToSelector:gs])?((id(*)(id,SEL,Class))objc_msgSend)(center,gs,mgrClass):nil;
-    if (mgr&&[mgr respondsToSelector:cl]) { @try { ((void(*)(id,SEL,id,unsigned int))objc_msgSend)(mgr,cl,u,0U); } @catch (...) {} }
+static void WCZZMarkRead(NSString *username) {
+    if (!username.length) return;
+    Class ctxClass = objc_getClass("MMContext");
+    Class mgrClass = objc_getClass("MMNewSessionMgr");
+    SEL currentSel = NSSelectorFromString(@"currentContext");
+    SEL serviceSel = NSSelectorFromString(@"getService:");
+    SEL clearSel = NSSelectorFromString(@"ChangeSessionUnReadCount:to:");
+    if (!ctxClass || !mgrClass || ![ctxClass respondsToSelector:currentSel]) return;
+    id ctx = ((id (*)(id, SEL))objc_msgSend)(ctxClass, currentSel);
+    id center = WCZZValue(ctx, @"serviceCenter");
+    if (!center || ![center respondsToSelector:serviceSel]) return;
+    id mgr = ((id (*)(id, SEL, Class))objc_msgSend)(center, serviceSel, mgrClass);
+    if (!mgr || ![mgr respondsToSelector:clearSel]) return;
+    @try {
+        // The first argument is the session username; the new unread count is zero.
+        ((void (*)(id, SEL, id, unsigned int))objc_msgSend)(mgr, clearSel, username, 0U);
+    } @catch (__unused NSException *e) {
+        NSLog(@"[wczz] ChangeSessionUnReadCount failed: %@", username);
+    }
 }
 
-#pragma mark - Group helper UI
-@class WCZZCommonRoomsViewController;
-static void WCZZReloadMainList(void);
+#pragma mark - Main controller discovery / reload
+
+static UIViewController *WCZZFindMainController(void) {
+    Class mainClass = objc_getClass("NewMainFrameViewController");
+    if (!mainClass) return nil;
+    UIApplication *app = UIApplication.sharedApplication;
+    NSMutableArray *roots = [NSMutableArray array];
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in app.connectedScenes) {
+            if (scene.activationState == UISceneActivationStateUnattached) continue;
+            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+            for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+                if (window.rootViewController) [roots addObject:window.rootViewController];
+            }
+        }
+    } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        for (UIWindow *window in app.windows) if (window.rootViewController) [roots addObject:window.rootViewController];
+#pragma clang diagnostic pop
+    }
+    NSMutableArray *stack = [NSMutableArray arrayWithArray:roots];
+    NSHashTable *visited = [NSHashTable weakObjectsHashTable];
+    while (stack.count) {
+        UIViewController *cur = stack.lastObject;
+        [stack removeLastObject];
+        if (!cur || [visited containsObject:cur]) continue;
+        [visited addObject:cur];
+        if ([cur isKindOfClass:mainClass]) return cur;
+        UIViewController *presented = cur.presentedViewController;
+        if (presented) [stack addObject:presented];
+        UINavigationController *nav = cur.navigationController;
+        if (nav && nav != cur) [stack addObject:nav];
+        for (UIViewController *child in cur.childViewControllers) [stack addObject:child];
+    }
+    return nil;
+}
+static void WCZZReloadMainList(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *vc = WCZZFindMainController();
+        if (!vc) return;
+        id tv = WCZZValue(vc, @"m_tableView");
+        if ([tv isKindOfClass:[UITableView class]]) {
+            [(UITableView *)tv reloadData];
+            return;
+        }
+        SEL reload = NSSelectorFromString(@"reloadSessions");
+        if ([vc respondsToSelector:reload]) {
+            @try { ((void (*)(id, SEL))objc_msgSend)(vc, reload); } @catch (__unused NSException *e) {}
+        }
+    });
+}
+
+#pragma mark - Group helper UI declarations
+
+@interface WCZZCommonRoomsViewController : UITableViewController
+@property(nonatomic, strong) NSArray *groups;
+@property(nonatomic, strong) NSMutableSet *selected;
+@end
 
 @interface WCZZGroupHelperViewController : UITableViewController
-@property(nonatomic,weak) id mainController;
-@property(nonatomic,strong) NSArray *sessions;
+@property(nonatomic, weak) UIViewController *mainController;
+@property(nonatomic, strong) NSArray *sessions;
 @end
+
 @implementation WCZZGroupHelperViewController
-- (void)viewDidLoad { [super viewDidLoad]; self.title=@"群助手"; self.tableView.tableFooterView=[UIView new]; self.tableView.rowHeight=60; self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:self action:@selector(wczzMore)]; }
-- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; NSMutableArray *a=[NSMutableArray array]; for(id s in WCZZSessionList()) if(WCZZShouldFold(s)) [a addObject:s]; self.sessions=a; [self.tableView reloadData]; }
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"群助手";
+    self.tableView.tableFooterView = [UIView new];
+    self.tableView.rowHeight = 60.0;
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:self action:@selector(wczzMore)];
+}
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    NSMutableArray *groups = [NSMutableArray array];
+    for (id session in WCZZSessionList()) if (WCZZShouldFold(session)) [groups addObject:session];
+    self.sessions = groups;
+    [self.tableView reloadData];
+}
 - (void)wczzMore {
-    UIAlertController *a=[UIAlertController alertControllerWithTitle:nil message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    [a addAction:[UIAlertAction actionWithTitle:@"一键已读" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *x){ NSArray *ss=[self.sessions copy]; for(id s in ss) WCZZClearUnreadName(WCZZUsername(s)); [self viewWillAppear:NO]; }]];
-    [a addAction:[UIAlertAction actionWithTitle:@"管理常用群" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *x){ WCZZCommonRoomsViewController *v=[WCZZCommonRoomsViewController new]; [self.navigationController pushViewController:v animated:YES]; }]];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:nil message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    [a addAction:[UIAlertAction actionWithTitle:@"一键已读" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        NSArray *snapshot = [self.sessions copy];
+        NSMutableArray *names = [NSMutableArray arrayWithCapacity:snapshot.count];
+        for (id session in snapshot) {
+            NSString *u = WCZZUsername(session);
+            if (u.length) [names addObject:u];
+        }
+        for (NSString *u in names) WCZZMarkRead(u);
+        // Refresh only the helper UI. Do not trigger a session rebuild here.
+        NSMutableArray *groups = [NSMutableArray array];
+        for (id session in WCZZSessionList()) if (WCZZShouldFold(session)) [groups addObject:session];
+        self.sessions = groups;
+        [self.tableView reloadData];
+    }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"管理常用群" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        WCZZCommonRoomsViewController *v = [WCZZCommonRoomsViewController new];
+        [self.navigationController pushViewController:v animated:YES];
+    }]];
     [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:a animated:YES completion:nil];
 }
-- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s { return s==0?(NSInteger)self.sessions.count:0; }
-- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip { static NSString *I=@"wczz.g"; UITableViewCell *c=[tv dequeueReusableCellWithIdentifier:I]; if(!c)c=[[UITableViewCell alloc]initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:I]; if(ip.row<self.sessions.count){id s=self.sessions[ip.row]; c.textLabel.text=WCZZDisplayName(WCZZContact(s)); unsigned long n=[WCZZValue(s,@"m_uUnReadCount") unsignedLongValue]; c.detailTextLabel.text=n?[NSString stringWithFormat:@"%lu 条未读",n]:@""; c.accessoryType=UITableViewCellAccessoryDisclosureIndicator;} return c; }
-- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip { [tv deselectRowAtIndexPath:ip animated:YES]; if(ip.row>=self.sessions.count)return; id s=self.sessions[ip.row]; id vc=self.mainController; SEL open=NSSelectorFromString(@"onLogicOpenSession:"); if(vc&&[vc respondsToSelector:open]) { @try { ((void(*)(id,SEL,id))objc_msgSend)(vc,open,s); } @catch (...) {} } }
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section { return section == 0 ? (NSInteger)self.sessions.count : 0; }
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    static NSString *ID = @"wczz.group";
+    UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:ID];
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:ID];
+    if (ip.row < self.sessions.count) {
+        id session = self.sessions[ip.row];
+        cell.textLabel.text = WCZZDisplayName(WCZZContact(session));
+        unsigned long n = [WCZZValue(session, @"m_uUnReadCount") unsignedLongValue];
+        cell.detailTextLabel.text = n ? [NSString stringWithFormat:@"%lu 条未读", n] : @"";
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    }
+    return cell;
+}
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [tv deselectRowAtIndexPath:ip animated:YES];
+    if (ip.row >= self.sessions.count) return;
+    id session = self.sessions[ip.row];
+    UIViewController *main = self.mainController;
+    SEL open = NSSelectorFromString(@"onLogicOpenSession:");
+    if (main && [main respondsToSelector:open]) {
+        @try { ((void (*)(id, SEL, id))objc_msgSend)(main, open, session); } @catch (__unused NSException *e) {}
+    }
+}
 @end
 
-@interface WCZZCommonRoomsViewController : UITableViewController
-@property(nonatomic,strong) NSArray *groups;
-@property(nonatomic,strong) NSMutableSet *selected;
-@end
 @implementation WCZZCommonRoomsViewController
-- (void)viewDidLoad { [super viewDidLoad]; self.title=@"常用群"; self.tableView.tableFooterView=[UIView new]; self.selected=[NSMutableSet setWithArray:WCZZCommonRooms()]; NSMutableArray *a=[NSMutableArray array]; for(id s in WCZZSessionList()){NSString *u=WCZZUsername(s); if(u.length&&WCZZIsChatRoom(WCZZContact(s))) [a addObject:s];} self.groups=a; }
-- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s{return s==0?(NSInteger)self.groups.count:0;}
-- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip { static NSString *I=@"wczz.c"; UITableViewCell *c=[tv dequeueReusableCellWithIdentifier:I]; if(!c)c=[[UITableViewCell alloc]initWithStyle:UITableViewCellStyleDefault reuseIdentifier:I]; if(ip.row<self.groups.count){id s=self.groups[ip.row];NSString *u=WCZZUsername(s);c.textLabel.text=WCZZDisplayName(WCZZContact(s));c.accessoryType=[self.selected containsObject:u]?UITableViewCellAccessoryCheckmark:UITableViewCellAccessoryNone;}return c; }
-- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip { if(ip.row>=self.groups.count)return;NSString *u=WCZZUsername(self.groups[ip.row]);if(!u.length)return;if([self.selected containsObject:u])[self.selected removeObject:u];else[self.selected addObject:u];WCZZSetCommonRooms(self.selected.allObjects);[tv reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationNone];WCZZReloadMainList(); }
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"常用群";
+    self.tableView.tableFooterView = [UIView new];
+    self.selected = [NSMutableSet setWithArray:WCZZCommonRooms()];
+    NSMutableArray *groups = [NSMutableArray array];
+    for (id session in WCZZSessionList()) {
+        NSString *u = WCZZUsername(session);
+        if (u.length && WCZZIsChatRoom(WCZZContact(session), u)) [groups addObject:session];
+    }
+    self.groups = groups;
+}
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section { return section == 0 ? (NSInteger)self.groups.count : 0; }
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    static NSString *ID = @"wczz.common";
+    UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:ID];
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:ID];
+    if (ip.row < self.groups.count) {
+        id session = self.groups[ip.row];
+        NSString *u = WCZZUsername(session);
+        cell.textLabel.text = WCZZDisplayName(WCZZContact(session));
+        cell.accessoryType = [self.selected containsObject:u] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+    }
+    return cell;
+}
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    if (ip.row >= self.groups.count) return;
+    NSString *u = WCZZUsername(self.groups[ip.row]);
+    if (!u.length) return;
+    if ([self.selected containsObject:u]) [self.selected removeObject:u];
+    else [self.selected addObject:u];
+    WCZZSetCommonRooms(self.selected.allObjects);
+    [tv reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationNone];
+    WCZZReloadMainList();
+}
 @end
 
 #pragma mark - Settings
+
 @interface WCZZSettingsViewController : UITableViewController @end
 @implementation WCZZSettingsViewController
-- (instancetype)init:(id)__unused model{return [super initWithStyle:UITableViewStyleGrouped];}
-- (void)viewDidLoad{[super viewDidLoad];self.title=@"wczz";self.tableView.tableFooterView=[UIView new];}
-- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s{return s==0?5:0;}
-- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip{static NSString *I=@"wczz.s";UITableViewCell*c=[tv dequeueReusableCellWithIdentifier:I];if(!c)c=[[UITableViewCell alloc]initWithStyle:UITableViewCellStyleDefault reuseIdentifier:I];c.accessoryView=nil;c.accessoryType=UITableViewCellAccessoryNone;if(ip.row<=3){UISwitch*w=[UISwitch new];w.tag=99+ip.row;w.on=ip.row==0?WCZZEnabled():ip.row==1?WCZZBool(WCZZGroupEnabledKey,YES):ip.row==2?WCZZBool(WCZZGroupTopKey,YES):WCZZBool(WCZZRedDetailKey,YES);[w addTarget:self action:@selector(wczzSwitch:) forControlEvents:UIControlEventValueChanged];c.accessoryView=w;c.textLabel.text=ip.row==0?@"启用 wczz":ip.row==1?@"开启群助手":ip.row==2?@"置顶群助手":@"红包详情";}else{c.textLabel.text=@"常用群";c.accessoryType=UITableViewCellAccessoryDisclosureIndicator;}return c;}
-- (void)wczzSwitch:(UISwitch*)w{if(w.tag==99)WCZZSetBool(WCZZPluginEnabledKey,w.on);else if(w.tag==100)WCZZSetBool(WCZZGroupEnabledKey,w.on);else if(w.tag==101)WCZZSetBool(WCZZGroupTopKey,w.on);else if(w.tag==102)WCZZSetBool(WCZZRedDetailKey,w.on);WCZZReloadMainList();}
-- (void)tableView:(UITableView*)tv didSelectRowAtIndexPath:(NSIndexPath*)ip{[tv deselectRowAtIndexPath:ip animated:YES];if(ip.row<=3){UISwitch*w=(UISwitch*)[tv cellForRowAtIndexPath:ip].accessoryView;if([w isKindOfClass:[UISwitch class]]){[w setOn:!w.on animated:YES];[self wczzSwitch:w];}}else if(ip.row==4){[self.navigationController pushViewController:[WCZZCommonRoomsViewController new] animated:YES];}}
+- (instancetype)init:(id)__unused model { return [super initWithStyle:UITableViewStyleGrouped]; }
+- (void)viewDidLoad { [super viewDidLoad]; self.title = @"wczz"; self.tableView.tableFooterView = [UIView new]; }
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section { return section == 0 ? 5 : 0; }
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    static NSString *ID = @"wczz.setting";
+    UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:ID];
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:ID];
+    cell.accessoryView = nil;
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    if (ip.row <= 3) {
+        UISwitch *sw = [UISwitch new];
+        sw.tag = 99 + ip.row;
+        if (ip.row == 0) sw.on = WCZZEnabled();
+        else if (ip.row == 1) sw.on = WCZZBool(WCZZGroupEnabledKey, YES);
+        else if (ip.row == 2) sw.on = WCZZBool(WCZZGroupTopKey, YES);
+        else sw.on = WCZZBool(WCZZRedDetailKey, YES);
+        [sw addTarget:self action:@selector(wczzSwitch:) forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = sw;
+        if (ip.row == 0) cell.textLabel.text = @"启用 wczz";
+        else if (ip.row == 1) cell.textLabel.text = @"开启群助手";
+        else if (ip.row == 2) cell.textLabel.text = @"置顶群助手";
+        else cell.textLabel.text = @"红包详情";
+    } else {
+        cell.textLabel.text = @"常用群";
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    }
+    return cell;
+}
+- (void)wczzSwitch:(UISwitch *)sw {
+    if (sw.tag == 99) WCZZSetBool(WCZZPluginEnabledKey, sw.on);
+    else if (sw.tag == 100) WCZZSetBool(WCZZGroupEnabledKey, sw.on);
+    else if (sw.tag == 101) WCZZSetBool(WCZZGroupTopKey, sw.on);
+    else if (sw.tag == 102) WCZZSetBool(WCZZRedDetailKey, sw.on);
+    WCZZReloadMainList();
+}
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [tv deselectRowAtIndexPath:ip animated:YES];
+    if (ip.row <= 3) {
+        UISwitch *sw = (UISwitch *)[(UITableViewCell *)[tv cellForRowAtIndexPath:ip] accessoryView];
+        if ([sw isKindOfClass:[UISwitch class]]) {
+            sw.on = !sw.on;
+            [self wczzSwitch:sw];
+        }
+    } else if (ip.row == 4) {
+        [self.navigationController pushViewController:[WCZZCommonRoomsViewController new] animated:YES];
+    }
+}
 @end
 
-#pragma mark - Runtime hook installer
-static IMP WCZZOrigLogicCount;
-static IMP WCZZOrigLogicCell;
-static IMP WCZZOrigLogicSession;
-static IMP WCZZOrigSelect;
-static IMP WCZZOrigReload;
-static IMP WCZZOrigRedRefresh;
-static IMP WCZZOrigRedAppear;
-static BOOL WCZZHooksInstalled=NO;
-static BOOL WCZZRedHooksInstalled=NO;
+#pragma mark - Main list integration
 
-static id WCZZLogic(id vc){return WCZZValue(vc,@"m_mainFrameLogicController");}
-static id WCZZCallOrigSession(id self, NSIndexPath *ip){ return WCZZOrigLogicSession?((id(*)(id,SEL,id))WCZZOrigLogicSession)(self,NSSelectorFromString(@"logicGetSessionAtIndexPath:"),ip):nil; }
-static id WCZZCallOrigCell(id self, NSIndexPath *ip){ return WCZZOrigLogicCell?((id(*)(id,SEL,id))WCZZOrigLogicCell)(self,NSSelectorFromString(@"logicGetCellDataAtIndexPath:"),ip):nil; }
-static long long WCZZOriginalLogicCount(id self,long long sec){ return WCZZOrigLogicCount?((long long(*)(id,SEL,long long))WCZZOrigLogicCount)(self,NSSelectorFromString(@"logicGetCountForSection:"),sec):0; }
-static NSArray *WCZZVisibleOriginalRows(id self,long long originalCount){ NSMutableArray *rows=[NSMutableArray array]; for(NSInteger i=0;i<originalCount;i++){NSIndexPath*ip=[NSIndexPath indexPathForRow:i inSection:0];id s=WCZZCallOrigSession(self,ip);if(!WCZZShouldFold(s))[rows addObject:@(i)];}return rows; }
-static BOOL WCZZIsHelperRow(id self,NSIndexPath *ip,NSArray *rows){if(!ip||ip.section!=0||!WCZZEnabled()||!WCZZBool(WCZZGroupEnabledKey,YES)||rows.count==0)return NO;BOOL top=WCZZBool(WCZZGroupTopKey,YES);return (top&&ip.row==0)||(!top&&ip.row==rows.count);}
+// We deliberately hook the actual UITableView data-source boundary. This is
+// the most stable adaptation point for the current WeChat headers. The
+// original table cell/session logic remains responsible for ordinary rows.
 
-static long long WCZZNewLogicCount(id self,SEL _cmd,long long sec){long long original=WCZZOriginalLogicCount(self,sec);if(sec!=0||!WCZZEnabled()||!WCZZBool(WCZZGroupEnabledKey,YES)||original<=0)return original;NSArray*rows=WCZZVisibleOriginalRows(self,original);if(rows.count==(NSUInteger)original)return original;return (long long)rows.count+1;}
-static id WCZZNewLogicSession(id self,SEL _cmd,id obj){NSIndexPath*ip=(NSIndexPath*)obj;if(![ip isKindOfClass:[NSIndexPath class]]||ip.section!=0||!WCZZEnabled()||!WCZZBool(WCZZGroupEnabledKey,YES))return WCZZCallOrigSession(self,ip);long long original=WCZZOriginalLogicCount(self,0);NSArray*rows=WCZZVisibleOriginalRows(self,original);if(WCZZIsHelperRow(self,ip,rows))return nil;NSUInteger vi=WCZZBool(WCZZGroupTopKey,YES)?(ip.row?ip.row-1:NSUIntegerMax):ip.row;if(vi>=rows.count)return WCZZCallOrigSession(self,ip);NSIndexPath*orig=[NSIndexPath indexPathForRow:[rows[vi] integerValue] inSection:0];return WCZZCallOrigSession(self,orig);}
-static id WCZZNewLogicCell(id self,SEL _cmd,id obj){NSIndexPath*ip=(NSIndexPath*)obj;if(![ip isKindOfClass:[NSIndexPath class]]||ip.section!=0||!WCZZEnabled()||!WCZZBool(WCZZGroupEnabledKey,YES))return WCZZCallOrigCell(self,ip);long long original=WCZZOriginalLogicCount(self,0);NSArray*rows=WCZZVisibleOriginalRows(self,original);if(WCZZIsHelperRow(self,ip,rows)){Class c=objc_getClass("FakeMainFrameCellData");if(!c)return nil;id fake=((id(*)(id,SEL))objc_msgSend)(c,NSSelectorFromString(@"alloc"));fake=((id(*)(id,SEL))objc_msgSend)(fake,NSSelectorFromString(@"init"));if([fake respondsToSelector:NSSelectorFromString(@"setUserName:")])((void(*)(id,SEL,id))objc_msgSend)(fake,NSSelectorFromString(@"setUserName:"),WCZZGroupUserName);if([fake respondsToSelector:NSSelectorFromString(@"setTextForNameLabel:")])((void(*)(id,SEL,id))objc_msgSend)(fake,NSSelectorFromString(@"setTextForNameLabel:"),@"群助手");if([fake respondsToSelector:NSSelectorFromString(@"setTextForMessageLabel:")])((void(*)(id,SEL,id))objc_msgSend)(fake,NSSelectorFromString(@"setTextForMessageLabel:"),[NSString stringWithFormat:@"%lu 个群聊",(unsigned long)(original-(long long)rows.count)]);if([fake respondsToSelector:NSSelectorFromString(@"setTextForTimeLabel:")])((void(*)(id,SEL,id))objc_msgSend)(fake,NSSelectorFromString(@"setTextForTimeLabel:"),@"");if([fake respondsToSelector:NSSelectorFromString(@"setBTopCell:")])((void(*)(id,SEL,BOOL))objc_msgSend)(fake,NSSelectorFromString(@"setBTopCell:"),WCZZBool(WCZZGroupTopKey,YES));if([fake respondsToSelector:NSSelectorFromString(@"setBNormalCell:")])((void(*)(id,SEL,BOOL))objc_msgSend)(fake,NSSelectorFromString(@"setBNormalCell:"),!WCZZBool(WCZZGroupTopKey,YES));return fake;}NSUInteger vi=WCZZBool(WCZZGroupTopKey,YES)?(ip.row?ip.row-1:NSUIntegerMax):ip.row;if(vi>=rows.count)return WCZZCallOrigCell(self,ip);NSIndexPath*orig=[NSIndexPath indexPathForRow:[rows[vi] integerValue] inSection:0];return WCZZCallOrigCell(self,orig);}
-static void WCZZNewSelect(id self,SEL _cmd,id table,id obj){NSIndexPath*ip=(NSIndexPath*)obj;if([ip isKindOfClass:[NSIndexPath class]]&&ip.section==0&&WCZZEnabled()&&WCZZBool(WCZZGroupEnabledKey,YES)){long long original=WCZZOriginalLogicCount(self,0);NSArray*rows=WCZZVisibleOriginalRows(self,original);if(WCZZIsHelperRow(self,ip,rows)){[(UITableView*)table deselectRowAtIndexPath:ip animated:YES];WCZZGroupHelperViewController*v=[WCZZGroupHelperViewController new];v.mainController=self;[self.navigationController pushViewController:v animated:YES];return;}}if(WCZZOrigSelect)((void(*)(id,SEL,id,id))WCZZOrigSelect)(self,_cmd,table,obj);}
-
-static void WCZZInstallOne(Class cls,SEL sel,IMP repl,IMP *orig){
-    if(!cls||!sel||!repl||!orig||*orig)return;
-    Method m=class_getInstanceMethod(cls,sel);
-    if(!m)return;
-    Class super=class_getSuperclass(cls);
-    Method sm=super?class_getInstanceMethod(super,sel):NULL;
-    if(sm==m){
-        const char *types=method_getTypeEncoding(m);
-        if(!class_addMethod(cls,sel,repl,types))return;
-        m=class_getInstanceMethod(cls,sel);
-    }
-    *orig=method_getImplementation(m);
-    method_setImplementation(m,repl);
+static const void *WCZZRowsCacheKey = &WCZZRowsCacheKey;
+static const void *WCZZOriginalCountCacheKey = &WCZZOriginalCountCacheKey;
+static NSArray *WCZZGetRowsCache(id self) { return objc_getAssociatedObject(self, WCZZRowsCacheKey); }
+static void WCZZSetRowsCache(id self, NSArray *rows) { objc_setAssociatedObject(self, WCZZRowsCacheKey, rows ?: @[], OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+static long long WCZZGetCachedOriginalCount(id self) {
+    NSNumber *n = objc_getAssociatedObject(self, WCZZOriginalCountCacheKey);
+    return [n isKindOfClass:[NSNumber class]] ? n.longLongValue : -1;
 }
-static void WCZZInstallHooks(void){
-    Class c=objc_getClass("NewMainFrameViewController");
-    Class r=objc_getClass("WCRedEnvelopesRedEnvelopesDetailViewController");
-    if(!WCZZHooksInstalled&&c){
-        WCZZInstallOne(c,NSSelectorFromString(@"logicGetCountForSection:"),(IMP)WCZZNewLogicCount,&WCZZOrigLogicCount);
-        WCZZInstallOne(c,NSSelectorFromString(@"logicGetCellDataAtIndexPath:"),(IMP)WCZZNewLogicCell,&WCZZOrigLogicCell);
-        WCZZInstallOne(c,NSSelectorFromString(@"logicGetSessionAtIndexPath:"),(IMP)WCZZNewLogicSession,&WCZZOrigLogicSession);
-        WCZZInstallOne(c,NSSelectorFromString(@"tableView:didSelectRowAtIndexPath:"),(IMP)WCZZNewSelect,&WCZZOrigSelect);
-        if(WCZZOrigLogicCount&&WCZZOrigLogicCell&&WCZZOrigLogicSession&&WCZZOrigSelect)WCZZHooksInstalled=YES;
-    }
-    if(!WCZZRedHooksInstalled&&r){
-        WCZZInstallOne(r,NSSelectorFromString(@"refreshViewWithData:"),(IMP)WCZZRedRefresh,&WCZZOrigRedRefresh);
-        WCZZInstallOne(r,NSSelectorFromString(@"viewDidAppear:"),(IMP)WCZZRedAppear,&WCZZOrigRedAppear);
-        if(WCZZOrigRedRefresh&&WCZZOrigRedAppear)WCZZRedHooksInstalled=YES;
-    }
+static void WCZZSetCachedOriginalCount(id self, long long count) {
+    objc_setAssociatedObject(self, WCZZOriginalCountCacheKey, @(count), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static void WCZZReloadMainList(void){dispatch_async(dispatch_get_main_queue(),^{Class c=objc_getClass("NewMainFrameViewController");if(!c)return;for(UIWindowScene*scene in UIApplication.sharedApplication.connectedScenes){if(scene.activationState==UISceneActivationStateUnattached)continue;for(UIWindow*w in scene.windows){UIViewController*root=w.rootViewController;if(!root)continue;NSMutableArray*stack=[NSMutableArray arrayWithObject:root];while(stack.count){UIViewController*v=stack.lastObject;[stack removeLastObject];if([v isKindOfClass:c]){SEL s=NSSelectorFromString(@"reloadSessions");if([v respondsToSelector:s])@try{((void(*)(id,SEL))objc_msgSend)(v,s);} @catch(...){}return;}if(v.presentedViewController)[stack addObject:v.presentedViewController];for(UIViewController*x in v.childViewControllers)[stack addObject:x];if(v.navigationController&&v.navigationController!=v)[stack addObject:v.navigationController];}}}});}
+static id WCZZMainLogic(id self) { return WCZZValue(self, @"m_mainFrameLogicController"); }
+static long long WCZZOriginalSessionCount(id self, long long section, long long fallback) {
+    long long cached = WCZZGetCachedOriginalCount(self);
+    if (cached >= 0) return cached;
+    id logic = WCZZMainLogic(self);
+    SEL sel = NSSelectorFromString(@"getSessionCountForSection:");
+    if (logic && [logic respondsToSelector:sel]) {
+        @try { return ((long long (*)(id, SEL, long long))objc_msgSend)(logic, sel, section); } @catch (__unused NSException *e) {}
+    }
+    return fallback;
+}
+static NSArray *WCZZBuildVisibleRows(id self, long long originalCount) {
+    if (originalCount <= 0) return @[];
+    id logic = WCZZMainLogic(self);
+    SEL sel = NSSelectorFromString(@"getSessionInfoAtIndexPath:");
+    if (!logic || ![logic respondsToSelector:sel]) return nil;
+    NSMutableArray *rows = [NSMutableArray arrayWithCapacity:(NSUInteger)originalCount];
+    for (NSInteger i = 0; i < originalCount; i++) {
+        NSIndexPath *ip = [NSIndexPath indexPathForRow:i inSection:0];
+        id session = nil;
+        @try { session = ((id (*)(id, SEL, id))objc_msgSend)(logic, sel, ip); } @catch (__unused NSException *e) {}
+        if (!WCZZShouldFold(session)) [rows addObject:@(i)];
+    }
+    return rows;
+}
+static BOOL WCZZHasFoldedRows(NSArray *rows, long long originalCount) {
+    return [rows isKindOfClass:[NSArray class]] && originalCount > 0 && rows.count < (NSUInteger)originalCount;
+}
 
-#pragma mark - Red detail (current WeChat)
-static void WCZZApplyRed(id vc){if(!WCZZEnabled()||!WCZZBool(WCZZRedDetailKey,YES)||!vc)return;id info=WCZZValue(vc,@"m_oWCRedEnvelopesDetailInfo");id label=WCZZValue(vc,@"m_receivedInfoLable");if(!info||![label isKindOfClass:[UILabel class]])return;long long a=[WCZZValue(info,@"m_lTotalAmount") longLongValue],n=[WCZZValue(info,@"m_lTotalNum") longLongValue],rn=[WCZZValue(info,@"m_lRecNum") longLongValue],ra=[WCZZValue(info,@"m_lRecAmount") longLongValue];if(a<=0&&n<=0&&rn<=0&&ra<=0)return;((UILabel*)label).text=[NSString stringWithFormat:@"共 %.2f 元 · %lld 人 · 已领取 %lld 人 / %.2f 元",a/100.0,n,rn,ra/100.0];}
-static void WCZZRedRefresh(id self,SEL _cmd,id data){if(WCZZOrigRedRefresh)((void(*)(id,SEL,id))WCZZOrigRedRefresh)(self,_cmd,data);dispatch_async(dispatch_get_main_queue(),^{WCZZApplyRed(self);});}
-static void WCZZRedAppear(id self,SEL _cmd,BOOL animated){if(WCZZOrigRedAppear)((void(*)(id,SEL,BOOL))WCZZOrigRedAppear)(self,_cmd,animated);dispatch_async(dispatch_get_main_queue(),^{WCZZApplyRed(self);dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.35*NSEC_PER_SEC)),dispatch_get_main_queue(),^{WCZZApplyRed(self);});});}
+%hook NewMainFrameViewController
+- (long long)tableView:(id)tableView numberOfRowsInSection:(long long)section {
+    long long original = %orig(tableView, section);
+    if (section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES) || original <= 0) {
+        if (section == 0) { WCZZSetRowsCache(self, nil); WCZZSetCachedOriginalCount(self, -1); }
+        return original;
+    }
+    NSArray *rows = WCZZBuildVisibleRows(self, original);
+    if (![rows isKindOfClass:[NSArray class]]) {
+        WCZZSetRowsCache(self, nil);
+        return original;
+    }
+    WCZZSetRowsCache(self, rows);
+    WCZZSetCachedOriginalCount(self, original);
+    if (rows.count == (NSUInteger)original) return original;
+    return (long long)rows.count + 1;
+}
+
+- (id)tableView:(id)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (![indexPath isKindOfClass:[NSIndexPath class]] || indexPath.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) {
+        return %orig(tableView, indexPath);
+    }
+    NSArray *rows = WCZZGetRowsCache(self);
+    long long original = WCZZOriginalSessionCount(self, 0, -1);
+    if (![rows isKindOfClass:[NSArray class]] || rows.count == 0 || original <= 0) {
+        rows = WCZZBuildVisibleRows(self, original);
+        if ([rows isKindOfClass:[NSArray class]]) { WCZZSetRowsCache(self, rows); WCZZSetCachedOriginalCount(self, original); }
+    }
+    if (![rows isKindOfClass:[NSArray class]] || rows.count == 0 || !WCZZHasFoldedRows(rows, original)) return %orig(tableView, indexPath);
+    BOOL top = WCZZBool(WCZZGroupTopKey, YES);
+    BOOL helper = (top && indexPath.row == 0) || (!top && indexPath.row == rows.count);
+    if (helper) {
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"wczz.helper.fallback"];
+        if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"wczz.helper.fallback"];
+        cell.textLabel.text = @"群助手";
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个群聊", (unsigned long)(original - (long long)rows.count)];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        return cell;
+    }
+    NSUInteger vi = top ? (indexPath.row > 0 ? indexPath.row - 1 : NSUIntegerMax) : indexPath.row;
+    if (vi >= rows.count) return %orig(tableView, indexPath);
+    NSIndexPath *origIP = [NSIndexPath indexPathForRow:[rows[vi] integerValue] inSection:0];
+    return %orig(tableView, origIP);
+}
+
+- (void)tableView:(id)tableView didSelectRowAtIndexPath:(id)indexPath {
+    if ([indexPath isKindOfClass:[NSIndexPath class]] && indexPath.section == 0 && WCZZEnabled() && WCZZBool(WCZZGroupEnabledKey, YES)) {
+        NSArray *rows = WCZZGetRowsCache(self);
+        long long original = WCZZOriginalSessionCount(self, 0, -1);
+        if (![rows isKindOfClass:[NSArray class]] || original <= 0) {
+            rows = WCZZBuildVisibleRows(self, original);
+            if ([rows isKindOfClass:[NSArray class]]) WCZZSetRowsCache(self, rows);
+        }
+        if (WCZZHasFoldedRows(rows, original)) {
+            BOOL top = WCZZBool(WCZZGroupTopKey, YES);
+            BOOL helper = (top && indexPath.row == 0) || (!top && indexPath.row == rows.count);
+            if (helper) {
+                [(UITableView *)tableView deselectRowAtIndexPath:indexPath animated:YES];
+                WCZZGroupHelperViewController *vc = [WCZZGroupHelperViewController new];
+                vc.mainController = self;
+                UINavigationController *nav = self.navigationController;
+                if (nav) [nav pushViewController:vc animated:YES];
+                return;
+            }
+            NSUInteger vi = top ? (indexPath.row > 0 ? indexPath.row - 1 : NSUIntegerMax) : indexPath.row;
+            if (vi < rows.count) {
+                NSIndexPath *origIP = [NSIndexPath indexPathForRow:[rows[vi] integerValue] inSection:0];
+                %orig(tableView, origIP);
+                return;
+            }
+        }
+    }
+    %orig(tableView, indexPath);
+}
+%end
+
+#pragma mark - Red detail
+
+static void WCZZApplyRedDetail(id vc) {
+    if (!WCZZEnabled() || !WCZZBool(WCZZRedDetailKey, YES) || !vc) return;
+    id info = WCZZValue(vc, @"m_oWCRedEnvelopesDetailInfo");
+    id labelObj = WCZZValue(vc, @"m_receivedInfoLable");
+    if (!info || ![labelObj isKindOfClass:[UILabel class]]) return;
+    long long totalAmount = [WCZZValue(info, @"m_lTotalAmount") longLongValue];
+    long long totalNum = [WCZZValue(info, @"m_lTotalNum") longLongValue];
+    long long recNum = [WCZZValue(info, @"m_lRecNum") longLongValue];
+    long long recAmount = [WCZZValue(info, @"m_lRecAmount") longLongValue];
+    if (totalAmount <= 0 && totalNum <= 0 && recNum <= 0 && recAmount <= 0) return;
+    ((UILabel *)labelObj).text = [NSString stringWithFormat:@"共 %.2f 元 · %lld 人 · 已领取 %lld 人 / %.2f 元", totalAmount / 100.0, totalNum, recNum, recAmount / 100.0];
+}
+
+%hook WCRedEnvelopesRedEnvelopesDetailViewController
+- (void)refreshViewWithData:(id)data {
+    %orig(data);
+    if (!WCZZEnabled() || !WCZZBool(WCZZRedDetailKey, YES)) return;
+    dispatch_async(dispatch_get_main_queue(), ^{ WCZZApplyRedDetail(self); });
+}
+- (void)viewDidAppear:(BOOL)animated {
+    %orig(animated);
+    if (!WCZZEnabled() || !WCZZBool(WCZZRedDetailKey, YES)) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WCZZApplyRedDetail(self);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCZZApplyRedDetail(self); });
+    });
+}
+%end
 
 #pragma mark - Plugin manager
-static BOOL WCZZRegistered=NO;static void WCZZRegister(void){if(WCZZRegistered)return;Class c=objc_getClass("WCPluginsMgr");SEL s=NSSelectorFromString(@"sharedInstance"),r=NSSelectorFromString(@"registerControllerWithTitle:version:controller:");if(!c||![c respondsToSelector:s])return;id m=((id(*)(id,SEL))objc_msgSend)(c,s);if(!m||![m respondsToSelector:r])return;((void(*)(id,SEL,id,id,id))objc_msgSend)(m,r,@"wczz",@"1.0-0",@"WCZZSettingsViewController");WCZZRegistered=YES;}
 
-%ctor { @autoreleasepool { NSUserDefaults*d=[NSUserDefaults standardUserDefaults];if([d objectForKey:WCZZPluginEnabledKey]==nil)[d setBool:YES forKey:WCZZPluginEnabledKey];if([d objectForKey:WCZZGroupEnabledKey]==nil)[d setBool:YES forKey:WCZZGroupEnabledKey];if([d objectForKey:WCZZGroupTopKey]==nil)[d setBool:YES forKey:WCZZGroupTopKey];if([d objectForKey:WCZZRedDetailKey]==nil)[d setBool:YES forKey:WCZZRedDetailKey];if([d objectForKey:WCZZCommonRoomsKey]==nil)[d setObject:@[] forKey:WCZZCommonRoomsKey];[d synchronize];dispatch_async(dispatch_get_main_queue(),^{WCZZRegister();WCZZInstallHooks();for(double t=0.5;t<=10;t+=0.5)dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(t*NSEC_PER_SEC)),dispatch_get_main_queue(),^{WCZZRegister();WCZZInstallHooks();});});}}
+static BOOL WCZZRegistered = NO;
+static void WCZZRegisterPlugin(void) {
+    if (WCZZRegistered) return;
+    Class c = objc_getClass("WCPluginsMgr");
+    SEL shared = NSSelectorFromString(@"sharedInstance");
+    SEL reg = NSSelectorFromString(@"registerControllerWithTitle:version:controller:");
+    if (!c || ![c respondsToSelector:shared]) return;
+    id mgr = ((id (*)(id, SEL))objc_msgSend)(c, shared);
+    if (!mgr || ![mgr respondsToSelector:reg]) return;
+    ((void (*)(id, SEL, id, id, id))objc_msgSend)(mgr, reg, @"wczz", @"1.0-0", @"WCZZSettingsViewController");
+    WCZZRegistered = YES;
+}
+
+%ctor {
+    @autoreleasepool {
+        NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+        if ([d objectForKey:WCZZPluginEnabledKey] == nil) [d setBool:YES forKey:WCZZPluginEnabledKey];
+        if ([d objectForKey:WCZZGroupEnabledKey] == nil) [d setBool:YES forKey:WCZZGroupEnabledKey];
+        if ([d objectForKey:WCZZGroupTopKey] == nil) [d setBool:YES forKey:WCZZGroupTopKey];
+        if ([d objectForKey:WCZZRedDetailKey] == nil) [d setBool:YES forKey:WCZZRedDetailKey];
+        if ([d objectForKey:WCZZCommonRoomsKey] == nil) [d setObject:@[] forKey:WCZZCommonRoomsKey];
+        [d synchronize];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WCZZRegisterPlugin();
+        });
+    }
+}
