@@ -637,7 +637,7 @@ static id WCZZBuildHelperCellData(id self) {
 }
 
 - (void)onDidSelectCellAt:(id)indexPath {
-    if (WCZZLogicReentry(self)) { %orig(indexPath); return; }
+    if (WCZZLogicReentry(self)) { %orig; return; }
     NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
     NSArray *rows = WCZZLogicRows(self);
     long long original = WCZZLogicOriginalCount(self);
