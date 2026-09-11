@@ -510,7 +510,6 @@ static id WCZZBuildHelperCellData(id self) {
     if (!c) return nil;
 
     NSArray *foldedRows = WCZZLogicFoldedRows(self);
-    long long foldedCount = foldedRows.count;
     unsigned long long unreadTotal = 0;
     NSString *latestMessage = nil;
     NSString *latestTime = nil;
@@ -637,7 +636,10 @@ static id WCZZBuildHelperCellData(id self) {
 }
 
 - (void)onDidSelectCellAt:(id)indexPath {
-    if (WCZZLogicReentry(self)) { %orig; return; }
+    if (WCZZLogicReentry(self)) {
+        %orig(indexPath);
+        return;
+    }
     NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
     NSArray *rows = WCZZLogicRows(self);
     long long original = WCZZLogicOriginalCount(self);
@@ -658,7 +660,7 @@ static id WCZZBuildHelperCellData(id self) {
         }
         NSIndexPath *origIP = WCZZOriginalIPForLogicRow(self, ip);
         if (origIP) {
-            %orig;
+            %orig(origIP);
             return;
         }
     }
