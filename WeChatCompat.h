@@ -2,8 +2,9 @@
 #import <Foundation/Foundation.h>
 
 @interface MainFrameLogicController : NSObject
-- (id)getCellDataByUsrName:(id)username;
-- (void)onSessionRebuildEnd;
+- (id)getSessionInfoAtIndexPath:(id)indexPath;
+- (id)getCellDataAtIndexPath:(id)indexPath;
+- (long long)getSessionCountForSection:(long long)section;
 @end
 
 @interface MMNewSessionMgr : NSObject
@@ -25,4 +26,5 @@
 
 @interface WCRedEnvelopesRedEnvelopesDetailViewController : UIViewController
 - (void)refreshViewWithData:(id)data;
+- (void)viewDidAppear:(BOOL)animated;
 @end
