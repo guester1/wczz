@@ -144,6 +144,12 @@ static void WCZZMarkAllGroupSessionsRead(id logic) {
 
 #pragma mark - Group helper page
 
+@interface WCZZCommonRoomsViewController : UITableViewController
+@property(nonatomic,weak) id mainController;
+@property(nonatomic,retain) NSArray *groups;
+@property(nonatomic,retain) NSMutableSet *selected;
+@end
+
 @interface WCZZGroupHelperViewController : UITableViewController
 @property(nonatomic,weak) id mainController;
 @property(nonatomic,retain) NSArray *sessions;
@@ -190,11 +196,6 @@ static void WCZZMarkAllGroupSessionsRead(id logic) {
 @end
 
 #pragma mark - Common groups
-@interface WCZZCommonRoomsViewController : UITableViewController
-@property(nonatomic,weak) id mainController;
-@property(nonatomic,retain) NSArray *groups;
-@property(nonatomic,retain) NSMutableSet *selected;
-@end
 @implementation WCZZCommonRoomsViewController
 - (void)viewDidLoad {
     [super viewDidLoad]; self.title = @"常用群"; self.tableView.tableFooterView = [UIView new];
