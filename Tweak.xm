@@ -1,7 +1,7 @@
 #import <UIKit/UIKit.h>
 
 // =============================================================================
-// 1. 头文件与类型声明
+// 1. 头文件与完整类型声明 (解决前置声明错误)
 // =============================================================================
 
 static NSString *const kWCZZHelperUserName = @"wczz_group_helper_session";
@@ -18,11 +18,13 @@ static NSMutableArray<id> *g_foldedSessions = nil;
 - (id)getSessionInfoForIndex:(unsigned int)index;
 @end
 
+@interface NewMainFrameViewController : UIViewController
+@end
+
 // =============================================================================
 // 2. 辅助工具函数
 // =============================================================================
 
-// 创建并更新群助手的虚拟 Session 数据
 static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
     static MMSessionInfo *helperSession = nil;
     static dispatch_once_t onceToken;
@@ -48,11 +50,10 @@ static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
     return helperSession;
 }
 
-// 判定是否属于需要折叠的群聊
 static BOOL WCZZIsFoldedGroupSession(MMSessionInfo *session) {
     if (!session || ![session respondsToSelector:@selector(m_nsUserName)]) return NO;
     if ([session.m_nsUserName hasSuffix:@"@chatroom"]) {
-        return YES; // 根据需求更改判定条件，例如增加白名单判定
+        return YES;
     }
     return NO;
 }
@@ -63,7 +64,6 @@ static BOOL WCZZIsFoldedGroupSession(MMSessionInfo *session) {
 
 %hook MainFrameLogicController
 
-// 动态计算剔除群聊后的总 Session 数
 - (unsigned int)getSessionCountForSection:(unsigned int)section {
     unsigned int origCount = %orig(section);
     if (section != 0) return origCount;
@@ -85,11 +85,10 @@ static BOOL WCZZIsFoldedGroupSession(MMSessionInfo *session) {
         }
         
         if (foldedCount == 0) return origCount;
-        return origCount - foldedCount + 1; // 扣除群聊数，留出 1 个入口给群助手
+        return origCount - foldedCount + 1;
     }
 }
 
-// 映射索引，重定向取出的 Session
 - (id)getSessionInfoForIndex:(unsigned int)index {
     NSMutableArray *realVector = [self cellDataVector];
     NSMutableArray *visibleSessions = [NSMutableArray array];
@@ -107,12 +106,10 @@ static BOOL WCZZIsFoldedGroupSession(MMSessionInfo *session) {
         return %orig(index);
     }
     
-    // 默认把“群助手”固定在顶部（第 0 行）
     if (index == 0) {
         return WCZZGetOrCreateHelperSession();
     }
     
-    // 其余正常 Session 顺延一个位置映射
     unsigned int mappedIndex = index - 1;
     if (mappedIndex < visibleSessions.count) {
         return visibleSessions[mappedIndex];
@@ -121,11 +118,10 @@ static BOOL WCZZIsFoldedGroupSession(MMSessionInfo *session) {
     return nil;
 }
 
-// 侧滑删除拦截：防止误删虚拟的群助手
 - (void)removeSessionAtIndex:(unsigned int)index {
     id session = [self getSessionInfoForIndex:index];
     if ([session isEqual:WCZZGetOrCreateHelperSession()]) {
-        return; // 拦截群助手的删除操作
+        return;
     }
     
     NSMutableArray *realVector = [self cellDataVector];
@@ -147,7 +143,6 @@ static BOOL WCZZIsFoldedGroupSession(MMSessionInfo *session) {
     MainFrameLogicController *logic = [self valueForKey:@"m_mainFrameLogicController"];
     MMSessionInfo *session = [logic getSessionInfoForIndex:(unsigned int)indexPath.row];
     
-    // 独立绘制虚拟群助手的 Cell，阻断原生的 Cell 绘制逻辑，防止读取内存报错
     if ([session.m_nsUserName isEqualToString:kWCZZHelperUserName]) {
         static NSString *cellIdentifier = @"WCZZGroupHelperCell";
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cellIdentifier];
