@@ -1,22 +1,25 @@
 # wczz 1.0-0
 
-Standalone WeChat tweak implementing the two requested MiYou-derived functions:
+Rootless Theos tweak for WeChat 8.0.78-era headers.
 
-- 群助手: fold non-common group sessions into a `群消息` entry, with a separate group list page and common-group whitelist.
-- 红包详情: use the current WeChat red-envelope detail objects and confirmed amount/count fields to present the collected/total summary.
+## Included behavior
+- MiYou-derived group helper concept: chat-room sessions are folded into a synthetic “群消息” row while configured “常用群” remain in the main list.
+- Group helper page with only two `+` actions: `一键已读` and `管理常用群`.
+- One-click read uses the current WeChat `MMContext -> MMServiceCenter -> MMNewSessionMgr -> ChangeSessionUnReadCount:to:` path rather than MiYou's obsolete/private selector.
+- MiYou-derived red-detail enhancement adapted to current `WCRedEnvelopesReceiveControlLogic` and `WCRedEnvelopesDetailInfo` fields.
+- Plugin-manager registration via `WCPluginsMgr`, including a master enable switch.
+- No message-clear or delete actions are registered in the group-helper menu.
 
-The project does **not** depend on WCRefine.
+## Important
+The source is a behavioral reimplementation based on static analysis of the supplied MiYou binary and adaptation to the supplied WeChat headers. It is not byte-for-byte recovered original source.
 
-## Files
+The supplied crash log's crashing frame was in `MiYou.dylib` (`addIMBehaviorContactOp:contactOpType:`); `wczz.dylib` was absent from that process's loaded-image list, so that crash cannot be attributed to wczz.
 
-- `Tweak.xm` — implementation
-- `WeChatCompat.h` — compile-time declarations for private WeChat classes
-- `Makefile` — rootless Theos build
-- `wczz.plist` — injection filter for `com.tencent.xin` / `WeChat`
-- `control` — package metadata
-- `.github/workflows/build.yml` — GitHub Actions build
-- `REVERSE_EVIDENCE.md` — evidence and confidence notes
+## Build
+Install Theos and run:
 
-## Runtime caveat
+```sh
+make clean package FINALPACKAGE=1
+```
 
-The source can be checked for compile-time correctness and built in CI, but no one can honestly guarantee device runtime behavior without testing against the exact WeChat binary and jailbreak environment. The group-cell integration and red-detail presentation are adaptations to the supplied current WeChat headers; the MiYou binary does not expose original source code.
+Rootless packaging is selected by `THEOS_PACKAGE_SCHEME=rootless` in the Makefile.
