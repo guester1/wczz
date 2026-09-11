@@ -1,15 +1,16 @@
 #import <UIKit/UIKit.h>
+#import <objc/runtime.h>
 #import "WeChatCompat.h"
 
 // 全局静态变量
 static NSString *const kWCZZHelperUserName = @"wczz_group_helper_session";
-static NSMutableArray<MMSessionInfo *> *g_foldedSessions = nil;
+static NSMutableArray *g_foldedSessions = nil;
 
-// 1. 安全判断是否为群聊 Session
-static BOOL WCZZIsFoldedGroupSession(MMSessionInfo *session) {
+// 安全判断是否为群聊 Session
+static BOOL WCZZIsFoldedGroupSession(id session) {
     if (!session) return NO;
     if ([session respondsToSelector:@selector(m_nsUserName)]) {
-        NSString *userName = session.m_nsUserName;
+        NSString *userName = [session performSelector:@selector(m_nsUserName)];
         if (userName && [userName hasSuffix:@"@chatroom"]) {
             return YES;
         }
@@ -17,48 +18,25 @@ static BOOL WCZZIsFoldedGroupSession(MMSessionInfo *session) {
     return NO;
 }
 
-// 2. 动态生成/更新助手 Session
-static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
-    static MMSessionInfo *helperSession = nil;
+// 动态生成/更新助手 Session
+static id WCZZGetOrCreateHelperSession(void) {
+    static id helperSession = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        helperSession = [[%c(MMSessionInfo) alloc] init];
-        if ([helperSession respondsToSelector:@selector(setM_nsUserName:)]) {
-            helperSession.m_nsUserName = kWCZZHelperUserName;
-        }
-    });
-    
-    unsigned int totalUnread = 0;
-    unsigned int latestTime = 0;
-    
-    if (g_foldedSessions) {
-        @synchronized (g_foldedSessions) {
-            for (MMSessionInfo *info in g_foldedSessions) {
-                if ([info respondsToSelector:@selector(m_uUnReadCount)]) {
-                    totalUnread += (unsigned int)info.m_uUnReadCount;
-                }
-                if ([info respondsToSelector:@selector(m_uLastMsgTime)]) {
-                    unsigned int msgTime = (unsigned int)info.m_uLastMsgTime;
-                    if (msgTime > latestTime) {
-                        latestTime = msgTime;
-                    }
-                }
+        Class sessionClass = objc_getClass("MMSessionInfo");
+        if (sessionClass) {
+            helperSession = [[sessionClass alloc] init];
+            if ([helperSession respondsToSelector:@selector(setM_nsUserName:)]) {
+                [helperSession performSelector:@selector(setM_nsUserName:) withObject:kWCZZHelperUserName];
             }
         }
-    }
-    
-    if ([helperSession respondsToSelector:@selector(setM_uUnReadCount:)]) {
-        helperSession.m_uUnReadCount = totalUnread;
-    }
-    if ([helperSession respondsToSelector:@selector(setM_uLastMsgTime:)]) {
-        helperSession.m_uLastMsgTime = latestTime;
-    }
+    });
     
     return helperSession;
 }
 
 // =============================================================================
-// 1. 红包功能 Hook
+// 1. 红包功能 Hook (保留原有逻辑)
 // =============================================================================
 
 %hook WCRedEnvelopesDetailViewController
@@ -70,7 +48,7 @@ static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
     if (dataIvar) {
         id data = object_getIvar(self, dataIvar);
         if (data && [data respondsToSelector:@selector(m_structRedEnvelopesDetail)]) {
-            self.title = @"红包详情";
+            ((UIViewController *)self).title = @"红包详情";
         }
     }
 }
@@ -78,7 +56,7 @@ static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
 %end
 
 // =============================================================================
-// 2. 群聊折叠核心逻辑
+// 2. 群聊折叠 Hook (使用 id 类型规避 @class 编译报错)
 // =============================================================================
 
 %hook MainFrameLogicController
@@ -87,7 +65,8 @@ static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
     unsigned int origCount = %orig(section);
     if (section != 0) return origCount;
 
-    NSMutableArray *realVector = [self cellDataVector];
+    if (![self respondsToSelector:@selector(cellDataVector)]) return origCount;
+    NSMutableArray *realVector = [self performSelector:@selector(cellDataVector)];
     if (!realVector) return origCount;
 
     if (!g_foldedSessions) {
@@ -98,7 +77,7 @@ static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
         [g_foldedSessions removeAllObjects];
         unsigned int foldedCount = 0;
         
-        for (MMSessionInfo *info in realVector) {
+        for (id info in realVector) {
             if (WCZZIsFoldedGroupSession(info)) {
                 [g_foldedSessions addObject:info];
                 foldedCount++;
@@ -111,13 +90,14 @@ static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
 }
 
 - (id)getSessionInfoForIndex:(unsigned int)index {
-    NSMutableArray *realVector = [self cellDataVector];
+    if (![self respondsToSelector:@selector(cellDataVector)]) return %orig(index);
+    NSMutableArray *realVector = [self performSelector:@selector(cellDataVector)];
     if (!realVector) return %orig(index);
 
     NSMutableArray *visibleSessions = [NSMutableArray array];
     BOOL hasFoldedGroup = NO;
     
-    for (MMSessionInfo *info in realVector) {
+    for (id info in realVector) {
         if (WCZZIsFoldedGroupSession(info)) {
             hasFoldedGroup = YES;
         } else {
@@ -144,7 +124,7 @@ static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
 %end
 
 // =============================================================================
-// 3. UI 视图交互层适配 (双重保护，解决渲染不显示问题)
+// 3. UI 视图渲染 Hook
 // =============================================================================
 
 %hook NewMainFrameViewController
@@ -153,27 +133,20 @@ static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
     UITableViewCell *cell = %orig(tableView, indexPath);
     
     if (indexPath.section == 0) {
-        MMSessionInfo *session = nil;
-        
-        // 兼容方式 1：通过 m_mainFrameLogicController
         if ([self respondsToSelector:@selector(m_mainFrameLogicController)]) {
             id logic = [self valueForKey:@"m_mainFrameLogicController"];
             if (logic && [logic respondsToSelector:@selector(getSessionInfoForIndex:)]) {
-                session = [logic getSessionInfoForIndex:(unsigned int)indexPath.row];
-            }
-        }
-        
-        // 自定义渲染“群聊助手”单元格
-        if (session && [session.m_nsUserName isEqualToString:kWCZZHelperUserName]) {
-            cell.textLabel.text = @"群聊助手";
-            
-            if (session.m_uUnReadCount > 0) {
-                cell.detailTextLabel.text = [NSString stringWithFormat:@"[%u条未读消息]", (unsigned int)session.m_uUnReadCount];
-                cell.detailTextLabel.textColor = [UIColor systemRedColor];
-            } else {
-                NSUInteger count = g_foldedSessions ? g_foldedSessions.count : 0;
-                cell.detailTextLabel.text = [NSString stringWithFormat:@"已折叠 %lu 个群聊", (unsigned long)count];
-                cell.detailTextLabel.textColor = [UIColor systemGrayColor];
+                id session = [logic performSelector:@selector(getSessionInfoForIndex:) withObject:@(indexPath.row)];
+                
+                if (session && [session respondsToSelector:@selector(m_nsUserName)]) {
+                    NSString *usrName = [session performSelector:@selector(m_nsUserName)];
+                    if ([usrName isEqualToString:kWCZZHelperUserName]) {
+                        cell.textLabel.text = @"群聊助手";
+                        NSUInteger count = g_foldedSessions ? g_foldedSessions.count : 0;
+                        cell.detailTextLabel.text = [NSString stringWithFormat:@"已折叠 %lu 个群聊", (unsigned long)count];
+                        cell.detailTextLabel.textColor = [UIColor systemGrayColor];
+                    }
+                }
             }
         }
     }
