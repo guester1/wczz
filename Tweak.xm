@@ -1,10 +1,6 @@
 #import <UIKit/UIKit.h>
 #import "WeChatCompat.h"
 
-// =============================================================================
-// 1. 全局变量与辅助判断
-// =============================================================================
-
 static NSString *const kWCZZHelperUserName = @"wczz_group_helper_session";
 static NSMutableArray<MMSessionInfo *> *g_foldedSessions = nil;
 
@@ -43,16 +39,11 @@ static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
     return helperSession;
 }
 
-// =============================================================================
-// 2. 红包详情控制器 Hook
-// =============================================================================
-
 %hook WCRedEnvelopesDetailViewController
 
 - (void)viewDidLoad {
     %orig;
     
-    // 原版红包详情处理逻辑
     Ivar dataIvar = class_getInstanceVariable([self class], "m_data");
     if (dataIvar) {
         id data = object_getIvar(self, dataIvar);
@@ -63,10 +54,6 @@ static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
 }
 
 %end
-
-// =============================================================================
-// 3. 底层会话控制器 Hook (MainFrameLogicController)
-// =============================================================================
 
 %hook MainFrameLogicController
 
@@ -147,10 +134,6 @@ static MMSessionInfo *WCZZGetOrCreateHelperSession(void) {
 }
 
 %end
-
-// =============================================================================
-// 4. 视图控制器 Hook (NewMainFrameViewController)
-// =============================================================================
 
 %hook NewMainFrameViewController
 
