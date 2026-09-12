@@ -648,7 +648,10 @@ static BOOL WCZZIsOurFakeData(id data) {
 
     WCZZEnsureLogicRows(self);
     NSIndexPath *origIP = WCZZOriginalIPForVisibleIP(self, ip);
-    return origIP ? %orig(origIP) : %orig(indexPath);
+    if (origIP) {
+        return %orig(origIP);
+    }
+    return %orig(indexPath);
 }
 
 - (id)getCellDataAtIndexPath:(id)indexPath {
@@ -661,7 +664,10 @@ static BOOL WCZZIsOurFakeData(id data) {
 
     WCZZEnsureLogicRows(self);
     NSIndexPath *origIP = WCZZOriginalIPForVisibleIP(self, ip);
-    return origIP ? %orig(origIP) : %orig(indexPath);
+    if (origIP) {
+        return %orig(origIP);
+    }
+    return %orig(indexPath);
 }
 
 - (long long)getFakeCellCount {
