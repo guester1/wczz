@@ -538,8 +538,18 @@ static BOOL WCZZHasFoldedGroups(id self) {
            [folded isKindOfClass:[NSArray class]] && folded.count > 0;
 }
 
-static FakeMainFrameCellData *WCZZBuildFakeCellData(id self) {
-    FakeMainFrameCellData *data = [FakeMainFrameCellData new];
+static id WCZZBuildFakeCellData(id self) {
+    // FakeMainFrameCellData is a private WeChat class. Do not reference it
+    // directly in compiled Objective-C code: that creates an undefined
+    // _OBJC_CLASS_$_FakeMainFrameCellData linker dependency. Resolve it only
+    // at runtime so the tweak can load even though the class lives inside
+    // WeChat rather than the SDK/frameworks linked by Theos.
+    Class fakeClass = objc_getClass("FakeMainFrameCellData");
+    if (!fakeClass) return nil;
+
+    id data = [[fakeClass alloc] init];
+    if (!data) return nil;
+
     NSArray *foldedRows = WCZZLogicFoldedRows(self);
     NSUInteger groupCount = foldedRows.count;
 
@@ -576,13 +586,13 @@ static FakeMainFrameCellData *WCZZBuildFakeCellData(id self) {
     if (unreadTotal > 0) message = [NSString stringWithFormat:@"%@ · %llu 条未读", message, unreadTotal];
     if (latestMessage.length > 0) message = [NSString stringWithFormat:@"%@ · %@", message, latestMessage];
 
-    data.userName = WCZZGroupUserName;
-    data.textForNameLabel = @"群助手";
-    data.textForMessageLabel = message;
-    data.textForTimeLabel = latestTime ?: @"";
-    data.widthForNameLabel = 0;
-    data.bNormalCell = YES;
-    data.bTopCell = WCZZBool(WCZZGroupTopKey, YES);
+    [data setValue:WCZZGroupUserName forKey:@"userName"];
+    [data setValue:@"群助手" forKey:@"textForNameLabel"];
+    [data setValue:message forKey:@"textForMessageLabel"];
+    [data setValue:(latestTime ?: @"") forKey:@"textForTimeLabel"];
+    [data setValue:@0 forKey:@"widthForNameLabel"];
+    [data setValue:@YES forKey:@"bNormalCell"];
+    [data setValue:@(WCZZBool(WCZZGroupTopKey, YES)) forKey:@"bTopCell"];
     return data;
 }
 

@@ -23,15 +23,7 @@
 - (void)handleSelectIndexPath:(id)indexPath tableView:(id)tableView;
 @end
 
-@interface FakeMainFrameCellData : NSObject
-@property _Bool bTopCell;
-@property _Bool bNormalCell;
-@property double widthForNameLabel;
-@property(retain) NSString *textForMessageLabel;
-@property(retain) NSString *textForTimeLabel;
-@property(retain) NSString *textForNameLabel;
-@property(retain) NSString *userName;
-@end
+
 
 @interface WCRedEnvelopesRedEnvelopesDetailViewController : UIViewController
 - (void)refreshViewWithData:(id)data;
