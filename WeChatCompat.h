@@ -2,14 +2,22 @@
 #import <Foundation/Foundation.h>
 
 @interface NewMainFrameViewController : UIViewController
-- (long long)logicGetCountForSection:(long long)section;
-- (id)logicGetSessionAtIndexPath:(id)indexPath;
-- (long long)tableView:(id)tableView numberOfRowsInSection:(long long)section;
-- (id)tableView:(id)tableView cellForRowAtIndexPath:(id)indexPath;
-- (double)tableView:(id)tableView heightForRowAtIndexPath:(id)indexPath;
-- (void)tableView:(id)tableView didSelectRowAtIndexPath:(id)indexPath;
+- (void)onLogicOpenSession:(id)session;
 - (void)onSessionRebuildEnd;
 - (void)reloadSessions;
+- (void)viewDidAppear:(BOOL)animated;
+@end
+
+@interface MMNewSessionMgr : NSObject
+- (BOOL)shouldFoldSession:(id)session;
+- (void)foldSessionByNames:(id)names;
+@end
+
+@interface MainFrameLogicController : NSObject
+- (void)onSessionRebuildEnd;
+- (id)getFakeCellData:(unsigned int)index;
+- (void)foldSessionUsernames:(id)names animate:(BOOL)animated;
+- (void)unfoldAllSessions;
 @end
 
 @interface WCRedEnvelopesRedEnvelopesDetailViewController : UIViewController
