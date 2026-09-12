@@ -1,6 +1,6 @@
 Package: com.guester.wczz
 Name: wczz
-Version: 1.0-5
+Version: 1.0-6
 Architecture: iphoneos-arm
 Description: Independent WeChat 8.0.75 group assistant tweak
 Maintainer: guester

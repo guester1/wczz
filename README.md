@@ -1,4 +1,4 @@
-# wczz v1.0-5
+# wczz v1.0-6
 
 Independent implementation for WeChat 8.0.75.
 
@@ -18,7 +18,7 @@ Independent implementation for WeChat 8.0.75.
 
 ## Main-list strategy
 
-v1.0-5 intentionally does **not** replace `UITableView` row counts or cells.
+v1.0-6 intentionally does **not** replace `UITableView` row counts or cells.
 It hooks:
 
 - `MMNewSessionMgr shouldFoldSession:`
