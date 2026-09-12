@@ -1,17 +1,28 @@
-# wczz 1.0-2
+# wczz v1.0-3
 
-Rootless iOS jailbreak tweak for WeChat 8.0.78-era headers.
+Independent implementation for WeChat 8.0.75.
 
-Features:
-- Group Helper: non-common chatrooms are folded into a synthetic Group Helper row; common groups remain in the normal WeChat chat list.
-- Group Helper opens a list of the folded groups.
-- One-click read clears unread counts through MMNewSessionMgr::ChangeSessionUnReadCount:to:.
-- Group Helper top toggle.
-- Group Helper avatar selection setting (the renderer may use WeChat's fake-cell handling).
-- Red-envelope detail header: total amount, total count, remaining count, remaining amount.
+## Design
 
-Implementation notes:
-- Main-list folding is hooked at MainFrameLogicController session/cell-data level.
-- FakeMainFrameCellData is used for the synthetic Group Helper row.
-- Red-envelope data is read from WCRedEnvelopesControlData.m_oWCRedEnvelopesDetailInfo passed to refreshViewWithData:.
-- No runtime dependency on other tweaks.
+- Does not reuse Miyou's folding implementation.
+- Only usernames ending in `@chatroom` are eligible for group folding.
+- Friends and non-group sessions are never collected.
+- Common groups remain in the normal session list.
+- Non-common groups are represented by a single "群助手" row.
+- The helper row can be placed at the top or bottom.
+- Tapping it opens a list of collected groups.
+- Tapping a collected group opens the original WeChat session.
+- Settings are registered through WCPluginsMgr when available.
+- Red-envelope detail summary is independent of the group-list implementation.
+
+## Main-list strategy
+
+The implementation hooks the actual `UITableViewDataSource/Delegate` methods on
+`NewMainFrameViewController` exposed by the WeChat 8.0.75 headers:
+
+- `tableView:numberOfRowsInSection:`
+- `tableView:cellForRowAtIndexPath:`
+- `tableView:heightForRowAtIndexPath:`
+- `tableView:didSelectRowAtIndexPath:`
+
+It deliberately does not hook `MainFrameLogicController`'s row-count/data methods.
