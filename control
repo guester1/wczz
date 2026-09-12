@@ -1,9 +1,9 @@
-Package: com.wczz
+Package: com.guester.wczz
 Name: wczz
-Version: 1.0-0
-Architecture: iphoneos-arm64
-Description: wczz - MiYou-compatible WeChat Group Helper and Red Detail framework
-Maintainer: wczz
-Author: wczz
+Version: 1.0-2
+Architecture: iphoneos-arm
+Description: WeChat group assistant tweak for WeChat 8.0.75
+Maintainer: guester
+Author: guester
 Section: Tweaks
-Depends: mobilesubstrate (>= 0.9.5000)
+Depends: firmware (>= 15.0)
