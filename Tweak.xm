@@ -436,6 +436,7 @@ static const void *WCZZRowsCacheKey = &WCZZRowsCacheKey;
 static const void *WCZZOriginalCountCacheKey = &WCZZOriginalCountCacheKey;
 static const void *WCZZFoldedRowsCacheKey = &WCZZFoldedRowsCacheKey;
 static const void *WCZZReentryKey = &WCZZReentryKey;
+static const void *WCZZNativeFakeCountKey = &WCZZNativeFakeCountKey;
 
 static NSArray *WCZZLogicRows(id self) {
     return objc_getAssociatedObject(self, WCZZRowsCacheKey);
@@ -517,19 +518,7 @@ static void WCZZPrepareLogicRows(id self, long long originalCount) {
 static BOOL WCZZEnsureLogicRows(id self) {
     if (!self) return NO;
     long long original = WCZZLogicOriginalCount(self);
-    if (original >= 0 && [WCZZLogicRows(self) isKindOfClass:[NSArray class]]) return YES;
-
-    WCZZSetLogicReentry(self, YES);
-    @try {
-        original = [(MainFrameLogicController *)self getSessionCountForSection:0];
-    } @catch (__unused NSException *e) {
-        original = -1;
-    }
-    WCZZSetLogicReentry(self, NO);
-
-    if (original < 0) return NO;
-    WCZZPrepareLogicRows(self, original);
-    return YES;
+    return original >= 0 && [WCZZLogicRows(self) isKindOfClass:[NSArray class]];
 }
 
 static NSIndexPath *WCZZOriginalIPForVisibleIP(id self, NSIndexPath *ip) {
@@ -605,8 +594,10 @@ static FakeMainFrameCellData *WCZZBuildFakeCellData(id self) {
     if (WCZZLogicReentry(self)) return original;
     if (!WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return original;
 
-    WCZZEnsureLogicRows(self);
-    objc_setAssociatedObject(self, @selector(getFakeCellCount), @(original), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // Rows are prepared by logicGetCountForSection:, which is the authoritative
+    // count boundary. Do not call getSessionCountForSection: here: doing so can
+    // re-enter WeChat's own rebuild path and leave the cache out of sync.
+    objc_setAssociatedObject(self, WCZZNativeFakeCountKey, @(original), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return original + (WCZZHasFoldedGroups(self) ? 1 : 0);
 }
 
@@ -614,17 +605,11 @@ static FakeMainFrameCellData *WCZZBuildFakeCellData(id self) {
     if (WCZZLogicReentry(self)) return %orig(index);
     if (!WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return %orig(index);
 
-    WCZZEnsureLogicRows(self);
+    if (!WCZZEnsureLogicRows(self)) return %orig(index);
 
-    NSNumber *nativeCountObj = objc_getAssociatedObject(self, @selector(getFakeCellCount));
+    NSNumber *nativeCountObj = objc_getAssociatedObject(self, WCZZNativeFakeCountKey);
     long long nativeCount = nativeCountObj ? nativeCountObj.longLongValue : -1;
-    if (nativeCount < 0) {
-        // The data method may be called before the count method. In that case
-        // fall back to the native count by temporarily bypassing our cache.
-        // A direct original call is not available outside the hook, so rebuild
-        // the cache on the next count call and do not claim an unknown index.
-        return %orig(index);
-    }
+    if (nativeCount < 0) return %orig(index);
 
     if (index == (unsigned int)nativeCount && WCZZHasFoldedGroups(self)) {
         return WCZZBuildFakeCellData(self);
@@ -636,7 +621,7 @@ static FakeMainFrameCellData *WCZZBuildFakeCellData(id self) {
     WCZZSetLogicRows(self, nil);
     WCZZSetLogicFoldedRows(self, nil);
     WCZZSetLogicOriginalCount(self, -1);
-    objc_setAssociatedObject(self, @selector(getFakeCellCount), nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(self, WCZZNativeFakeCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     %orig;
 }
 
@@ -663,9 +648,12 @@ static FakeMainFrameCellData *WCZZBuildFakeCellData(id self) {
 
     MainFrameLogicController *logic = (MainFrameLogicController *)WCZZValue(self, @"m_mainFrameLogicController");
     if (!logic) return %orig(indexPath);
-    WCZZEnsureLogicRows(logic);
+    if (!WCZZEnsureLogicRows(logic)) return %orig(indexPath);
     NSIndexPath *origIP = WCZZOriginalIPForVisibleIP(logic, ip);
-    return origIP ? %orig(origIP) : %orig(indexPath);
+    if (origIP) {
+        return %orig(origIP);
+    }
+    return %orig(indexPath);
 }
 
 - (id)logicGetCellDataAtIndexPath:(id)indexPath {
@@ -674,17 +662,19 @@ static FakeMainFrameCellData *WCZZBuildFakeCellData(id self) {
 
     MainFrameLogicController *logic = (MainFrameLogicController *)WCZZValue(self, @"m_mainFrameLogicController");
     if (!logic) return %orig(indexPath);
-    WCZZEnsureLogicRows(logic);
+    if (!WCZZEnsureLogicRows(logic)) return %orig(indexPath);
     NSIndexPath *origIP = WCZZOriginalIPForVisibleIP(logic, ip);
-    return origIP ? %orig(origIP) : %orig(indexPath);
+    if (origIP) {
+        return %orig(origIP);
+    }
+    return %orig(indexPath);
 }
 
 - (void)handleSelectIndexPath:(id)indexPath tableView:(id)tableView {
     NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
     if (ip && ip.section == 0 && WCZZEnabled() && WCZZBool(WCZZGroupEnabledKey, YES)) {
         MainFrameLogicController *logic = (MainFrameLogicController *)WCZZValue(self, @"m_mainFrameLogicController");
-        if (logic) {
-            WCZZEnsureLogicRows(logic);
+        if (logic && WCZZEnsureLogicRows(logic)) {
             if (WCZZHasFoldedGroups(logic)) {
                 BOOL top = WCZZBool(WCZZGroupTopKey, YES);
                 NSArray *visible = WCZZLogicRows(logic);
