@@ -1,4 +1,4 @@
-# wczz 1.0-0
+# wczz 1.0-2
 
 Rootless iOS jailbreak tweak for WeChat 8.0.78-era headers.
 

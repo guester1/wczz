@@ -5,6 +5,8 @@
 - (id)getSessionInfoAtIndexPath:(id)indexPath;
 - (id)getCellDataAtIndexPath:(id)indexPath;
 - (long long)getSessionCountForSection:(long long)section;
+- (long long)getFakeCellCount;
+- (id)getFakeCellData:(unsigned int)index;
 - (void)onDidSelectCellAt:(id)indexPath;
 - (void)onSessionRebuildEnd;
 @end
@@ -18,6 +20,17 @@
 @interface NewMainFrameViewController : UIViewController
 - (void)onLogicOpenSession:(id)session;
 - (void)reloadSessions;
+- (void)handleSelectIndexPath:(id)indexPath tableView:(id)tableView;
+@end
+
+@interface FakeMainFrameCellData : NSObject
+@property _Bool bTopCell;
+@property _Bool bNormalCell;
+@property double widthForNameLabel;
+@property(retain) NSString *textForMessageLabel;
+@property(retain) NSString *textForTimeLabel;
+@property(retain) NSString *textForNameLabel;
+@property(retain) NSString *userName;
 @end
 
 @interface WCRedEnvelopesRedEnvelopesDetailViewController : UIViewController

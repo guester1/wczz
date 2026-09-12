@@ -4,7 +4,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 
-// wczz 1.0-0
+// wczz 1.0-2
 // Independent implementation. Runtime dependency: WeChat only.
 
 static NSString * const WCZZPluginEnabledKey = @"wczz.plugin.enabled";
@@ -41,29 +41,20 @@ static NSString *WCZZUsername(id session) {
     return [v isKindOfClass:[NSString class]] ? (NSString *)v : nil;
 }
 static id WCZZContact(id session) { return WCZZValue(session, @"m_contact"); }
-static BOOL WCZZIsChatRoom(id contact, NSString *username) {
-    // Do not require m_contact: some session states expose the username first.
-    if ([username isKindOfClass:[NSString class]] && [username hasSuffix:@"@chatroom"]) return YES;
-    if (!contact) return NO;
-    Class c = objc_getClass("CContact");
-    SEL s = NSSelectorFromString(@"IsChatRoomContact:");
-    if (c && [c respondsToSelector:s]) {
-        @try {
-            if (((BOOL (*)(id, SEL, id))objc_msgSend)(c, s, contact)) return YES;
-        } @catch (__unused NSException *e) {}
-    }
-    id u = WCZZValue(contact, @"m_nsUsrName");
-    return [u isKindOfClass:[NSString class]] && [(NSString *)u hasSuffix:@"@chatroom"];
+static BOOL WCZZIsGroupUsername(NSString *username) {
+    return [username isKindOfClass:[NSString class]] && username.length > 0 && [username hasSuffix:@"@chatroom"];
 }
+static BOOL WCZZIsChatRoom(id __unused contact, NSString *username) { return WCZZIsGroupUsername(username); }
+
 static BOOL WCZZIsCommonRoom(NSString *u) {
     return u.length > 0 && [WCZZCommonRooms() containsObject:u];
 }
 static BOOL WCZZShouldFold(id session) {
     if (!WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES) || !session) return NO;
     NSString *u = WCZZUsername(session);
-    if (!u.length) return NO;
+    if (!WCZZIsGroupUsername(u)) return NO;
     if (WCZZIsCommonRoom(u)) return NO;
-    return WCZZIsChatRoom(WCZZContact(session), u);
+    return YES;
 }
 static NSString *WCZZDisplayName(id contact) {
     SEL s = NSSelectorFromString(@"getContactDisplayName");
@@ -254,7 +245,7 @@ static void WCZZReloadMainList(void) {
     NSMutableArray *groups = [NSMutableArray array];
     for (id session in WCZZSessionList()) {
         NSString *u = WCZZUsername(session);
-        if (u.length && WCZZIsChatRoom(WCZZContact(session), u)) [groups addObject:session];
+        if (WCZZIsGroupUsername(u)) [groups addObject:session];
     }
     self.groups = groups;
 }
@@ -298,7 +289,9 @@ static void WCZZReloadMainList(void) {
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section {
     if (section == 0) return 2;       // 开启 / 置顶
     if (section == 1) return 2;       // 头像 / 常用群
-    return MIN(20, (NSInteger)WCZZSessionList().count); // 群列表
+    NSInteger count = 0;
+    for (id session in WCZZSessionList()) if (WCZZIsGroupUsername(WCZZUsername(session))) count++;
+    return MIN(20, count); // 只显示群聊
 }
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)section {
     if (section == 2) return @"开启群助手后会将微信群归纳至群助手，可以通过常用群列表筛选不想被归纳的群。";
@@ -330,8 +323,9 @@ static void WCZZReloadMainList(void) {
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         }
     } else {
-        NSArray *all = WCZZSessionList();
-        if (ip.row < (NSInteger)all.count) {
+        NSMutableArray *all = [NSMutableArray array];
+        for (id session in WCZZSessionList()) if (WCZZIsGroupUsername(WCZZUsername(session))) [all addObject:session];
+        if (ip.row < (NSInteger)MIN(20, all.count)) {
             id session = all[(NSUInteger)ip.row];
             cell.textLabel.text = WCZZDisplayName(WCZZContact(session));
             NSString *u = WCZZUsername(session);
@@ -426,11 +420,18 @@ static void WCZZReloadMainList(void) {
 @end
 
 #pragma mark - Main list integration
-
-// Fold at the exact MainFrameLogicController data boundary used by the
-// current WeChat build.  The table view remains WeChat-owned; we only alter
-// the logical session count/cell-data/index mapping and intercept selection
-// of the synthetic helper row.
+//
+// WeChat 8.0.75 already has a first-class "fake main-frame cell" path:
+// MainFrameLogicController exposes getFakeCellCount/getFakeCellData and the
+// binary contains FakeMainFrameCell/FakeMainFrameCellData.
+//
+// The previous implementation inserted a fake row into
+// getSessionCountForSection:. That is the wrong layer: the table treats fake
+// cells separately, so returning FakeMainFrameCellData from
+// getCellDataAtIndexPath: can result in no cell, wrong mapping, or no tap.
+//
+// v25 uses the native fake-cell path and only filters the real session array.
+// Every session is hard-filtered by *@chatroom before it can be folded.
 
 static const void *WCZZRowsCacheKey = &WCZZRowsCacheKey;
 static const void *WCZZOriginalCountCacheKey = &WCZZOriginalCountCacheKey;
@@ -464,103 +465,162 @@ static void WCZZSetLogicReentry(id self, BOOL on) {
 }
 
 static NSArray *WCZZBuildLogicRows(id self, long long originalCount, NSMutableArray **foldedOut) {
-    if (originalCount <= 0) return @[];
-    NSMutableArray *rows = [NSMutableArray arrayWithCapacity:(NSUInteger)originalCount];
+    if (originalCount <= 0) {
+        if (foldedOut) *foldedOut = [NSMutableArray array];
+        return @[];
+    }
+
+    NSMutableArray *visible = [NSMutableArray arrayWithCapacity:(NSUInteger)originalCount];
     NSMutableArray *folded = [NSMutableArray array];
+
     WCZZSetLogicReentry(self, YES);
     for (NSInteger i = 0; i < originalCount; i++) {
         NSIndexPath *ip = [NSIndexPath indexPathForRow:i inSection:0];
         id session = nil;
-        @try { session = [(MainFrameLogicController *)self getSessionInfoAtIndexPath:ip]; }
-        @catch (__unused NSException *e) {}
-        if (WCZZShouldFold(session)) [folded addObject:@(i)];
-        else [rows addObject:@(i)];
+        @try {
+            session = [(MainFrameLogicController *)self getSessionInfoAtIndexPath:ip];
+        } @catch (__unused NSException *e) {
+            session = nil;
+        }
+
+        // ABSOLUTE GROUP-ONLY GATE:
+        // If the username is not *@chatroom, it can NEVER be folded.
+        if (WCZZShouldFold(session)) {
+            [folded addObject:@(i)];
+        } else {
+            [visible addObject:@(i)];
+        }
     }
     WCZZSetLogicReentry(self, NO);
+
     if (foldedOut) *foldedOut = folded;
-    return rows;
+    return visible;
 }
 
-static BOOL WCZZPrepareLogicRows(id self, long long originalCount, NSArray **rowsOut) {
-    if (!WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES) || originalCount <= 0) return NO;
+static void WCZZPrepareLogicRows(id self, long long originalCount) {
+    if (originalCount < 0) {
+        WCZZSetLogicRows(self, nil);
+        WCZZSetLogicFoldedRows(self, nil);
+        WCZZSetLogicOriginalCount(self, -1);
+        return;
+    }
+
+    if (!WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES) || originalCount == 0) {
+        WCZZSetLogicRows(self, nil);
+        WCZZSetLogicFoldedRows(self, nil);
+        WCZZSetLogicOriginalCount(self, originalCount);
+        return;
+    }
+
     NSMutableArray *folded = nil;
-    NSArray *rows = WCZZBuildLogicRows(self, originalCount, &folded);
-    if (![rows isKindOfClass:[NSArray class]]) return NO;
-    WCZZSetLogicRows(self, rows);
+    NSArray *visible = WCZZBuildLogicRows(self, originalCount, &folded);
+    WCZZSetLogicRows(self, visible);
     WCZZSetLogicFoldedRows(self, folded ?: @[]);
     WCZZSetLogicOriginalCount(self, originalCount);
-    if (rowsOut) *rowsOut = rows;
-    return rows.count < (NSUInteger)originalCount;
 }
 
-static NSIndexPath *WCZZOriginalIPForLogicRow(id self, NSIndexPath *visibleIP) {
+static BOOL WCZZEnsureLogicRows(id self) {
+    long long original = WCZZLogicOriginalCount(self);
+    if (original >= 0 && [WCZZLogicRows(self) isKindOfClass:[NSArray class]]) return YES;
+
+    WCZZSetLogicReentry(self, YES);
+    @try {
+        original = [(MainFrameLogicController *)self getSessionCountForSection:0];
+    } @catch (__unused NSException *e) {
+        original = -1;
+    }
+    WCZZSetLogicReentry(self, NO);
+
+    if (original < 0) return NO;
+    WCZZPrepareLogicRows(self, original);
+    return YES;
+}
+
+static NSIndexPath *WCZZOriginalIPForVisibleIP(id self, NSIndexPath *ip) {
+    if (!ip || ip.section != 0) return nil;
     NSArray *rows = WCZZLogicRows(self);
     if (![rows isKindOfClass:[NSArray class]]) return nil;
-    BOOL top = WCZZBool(WCZZGroupTopKey, YES);
-    NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
-    if (visibleIP.row == helperRow) return nil;
-    NSInteger visibleIndex = top ? visibleIP.row - 1 : visibleIP.row;
-    if (visibleIndex < 0 || visibleIndex >= (NSInteger)rows.count) return nil;
-    NSInteger originalRow = [rows[(NSUInteger)visibleIndex] integerValue];
-    return [NSIndexPath indexPathForRow:originalRow inSection:visibleIP.section];
+    if (ip.row < 0 || ip.row >= (NSInteger)rows.count) return nil;
+
+    NSInteger originalRow = [rows[(NSUInteger)ip.row] integerValue];
+    return [NSIndexPath indexPathForRow:originalRow inSection:ip.section];
 }
 
-static id WCZZBuildHelperCellData(id self) {
-    Class c = objc_getClass("FakeMainFrameCellData");
-    if (!c) return nil;
+static BOOL WCZZHasFoldedGroups(id self) {
+    NSArray *folded = WCZZLogicFoldedRows(self);
+    return WCZZEnabled() &&
+           WCZZBool(WCZZGroupEnabledKey, YES) &&
+           [folded isKindOfClass:[NSArray class]] &&
+           folded.count > 0;
+}
+
+static FakeMainFrameCellData *WCZZBuildFakeCellData(id self) {
+    FakeMainFrameCellData *data = [FakeMainFrameCellData new];
 
     NSArray *foldedRows = WCZZLogicFoldedRows(self);
+    NSUInteger groupCount = foldedRows.count;
+
     unsigned long long unreadTotal = 0;
     NSString *latestMessage = nil;
     NSString *latestTime = nil;
-    double latestWidth = 0.0;
 
-    // Read the original cell-data for folded sessions while re-entry is set,
-    // so this helper row gets the same preview/time formatting as WeChat.
-    if ([foldedRows isKindOfClass:[NSArray class]]) {
-        for (NSNumber *n in foldedRows) {
-            NSInteger r = n.integerValue;
-            NSIndexPath *ip = [NSIndexPath indexPathForRow:r inSection:0];
-            id session = nil;
-            id data = nil;
-            WCZZSetLogicReentry(self, YES);
-            @try { session = [(MainFrameLogicController *)self getSessionInfoAtIndexPath:ip]; } @catch (__unused NSException *e) {}
-            @try { data = [(MainFrameLogicController *)self getCellDataAtIndexPath:ip]; } @catch (__unused NSException *e) {}
-            WCZZSetLogicReentry(self, NO);
+    // Build a compact preview from folded GROUP sessions only.
+    // This never reads or counts a friend session.
+    for (NSNumber *n in foldedRows) {
+        NSInteger row = n.integerValue;
+        NSIndexPath *ip = [NSIndexPath indexPathForRow:row inSection:0];
 
-            unreadTotal += (unsigned long long)[WCZZValue(session, @"m_uUnReadCount") unsignedIntValue];
-            if (data) {
-                id msg = WCZZValue(data, @"textForMessageLabel");
-                id time = WCZZValue(data, @"textForTimeLabel");
-                if ([msg isKindOfClass:[NSString class]] && [(NSString *)msg length]) latestMessage = msg;
-                if ([time isKindOfClass:[NSString class]] && [(NSString *)time length]) latestTime = time;
-                latestWidth = [WCZZValue(data, @"widthForNameLabel") doubleValue];
-            }
-        }
+        id session = nil;
+        id cellData = nil;
+        WCZZSetLogicReentry(self, YES);
+        @try { session = [(MainFrameLogicController *)self getSessionInfoAtIndexPath:ip]; } @catch (__unused NSException *e) {}
+        @try { cellData = [(MainFrameLogicController *)self getCellDataAtIndexPath:ip]; } @catch (__unused NSException *e) {}
+        WCZZSetLogicReentry(self, NO);
+
+        NSString *username = WCZZUsername(session);
+        if (!WCZZIsGroupUsername(username)) continue;
+
+        unreadTotal += (unsigned long long)[WCZZValue(session, @"m_uUnReadCount") unsignedIntValue];
+
+        id msg = WCZZValue(cellData, @"m_textForMessageLabel");
+        if (!msg) msg = WCZZValue(cellData, @"textForMessageLabel");
+        if ([msg isKindOfClass:[NSString class]] && [(NSString *)msg length] > 0) latestMessage = msg;
+
+        id time = WCZZValue(cellData, @"m_textForTimeLabel");
+        if (!time) time = WCZZValue(cellData, @"textForTimeLabel");
+        if ([time isKindOfClass:[NSString class]] && [(NSString *)time length] > 0) latestTime = time;
     }
 
-    NSString *prefix = [NSString stringWithFormat:@"[%llu条]", unreadTotal];
-    NSString *message = latestMessage.length ? [NSString stringWithFormat:@"%@ %@", prefix, latestMessage] : prefix;
-    id data = [[c alloc] init];
-    @try {
-        [data setValue:WCZZGroupUserName forKey:@"userName"];
-        [data setValue:@"群助手" forKey:@"textForNameLabel"];
-        [data setValue:message forKey:@"textForMessageLabel"];
-        [data setValue:(latestTime ?: @"") forKey:@"textForTimeLabel"];
-        [data setValue:@YES forKey:@"bNormalCell"];
-        [data setValue:@(WCZZBool(WCZZGroupTopKey, YES)) forKey:@"bTopCell"];
-        [data setValue:@(latestWidth) forKey:@"widthForNameLabel"];
-    } @catch (__unused NSException *e) {}
+    NSString *message = [NSString stringWithFormat:@"%lu 个群", (unsigned long)groupCount];
+    if (unreadTotal > 0) {
+        message = [NSString stringWithFormat:@"%@ · %llu 条未读", message, unreadTotal];
+    }
+    if (latestMessage.length > 0) {
+        message = [NSString stringWithFormat:@"%@ · %@", message, latestMessage];
+    }
+
+    data.userName = WCZZGroupUserName;
+    data.textForNameLabel = @"群助手";
+    data.textForMessageLabel = message;
+    data.textForTimeLabel = latestTime ?: @"";
+    data.widthForNameLabel = 0;
+    data.bNormalCell = YES;
+    data.bTopCell = WCZZBool(WCZZGroupTopKey, YES);
     return data;
+}
+
+static BOOL WCZZIsOurFakeData(id data) {
+    return [WCZZValue(data, @"userName") isEqual:WCZZGroupUserName];
 }
 
 %group WCZZMainLogicHooks
 %hook MainFrameLogicController
 
 - (long long)getSessionCountForSection:(long long)section {
-    if (WCZZLogicReentry(self)) return %orig(section);
     long long original = %orig(section);
-    if (section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES) || original <= 0) {
+
+    if (WCZZLogicReentry(self)) return original;
+    if (section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) {
         if (section == 0) {
             WCZZSetLogicRows(self, nil);
             WCZZSetLogicFoldedRows(self, nil);
@@ -568,71 +628,70 @@ static id WCZZBuildHelperCellData(id self) {
         }
         return original;
     }
-    NSArray *rows = nil;
-    if (!WCZZPrepareLogicRows(self, original, &rows)) return original;
-    return (long long)rows.count + 1;
+
+    WCZZPrepareLogicRows(self, original);
+    NSArray *visible = WCZZLogicRows(self);
+    if (![visible isKindOfClass:[NSArray class]]) return original;
+
+    // IMPORTANT: only remove sessions that passed WCZZShouldFold(),
+    // which itself requires *@chatroom.
+    return (long long)visible.count;
 }
 
 - (id)getSessionInfoAtIndexPath:(id)indexPath {
     if (WCZZLogicReentry(self)) return %orig(indexPath);
+
     NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
-    if (!ip || ip.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return %orig(indexPath);
-
-    long long original = WCZZLogicOriginalCount(self);
-    NSArray *rows = WCZZLogicRows(self);
-    if (![rows isKindOfClass:[NSArray class]] || original < 0) {
-        // Rebuild the mapping from the real count.  Avoid calling our own
-        // count hook: obtain the original count by temporarily entering.
-        WCZZSetLogicReentry(self, YES);
-        @try { original = [self getSessionCountForSection:0]; } @catch (__unused NSException *e) { original = -1; }
-        WCZZSetLogicReentry(self, NO);
-        if (original >= 0) {
-            NSMutableArray *folded = nil;
-            rows = WCZZBuildLogicRows(self, original, &folded);
-            WCZZSetLogicRows(self, rows);
-            WCZZSetLogicFoldedRows(self, folded ?: @[]);
-            WCZZSetLogicOriginalCount(self, original);
-        }
+    if (!ip || ip.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) {
+        return %orig(indexPath);
     }
-    if (![rows isKindOfClass:[NSArray class]] || original <= 0 || rows.count >= (NSUInteger)original) return %orig(indexPath);
 
-    BOOL top = WCZZBool(WCZZGroupTopKey, YES);
-    NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
-    if (ip.row == helperRow) return nil;
-    NSIndexPath *origIP = WCZZOriginalIPForLogicRow(self, ip);
-    if (!origIP) return nil;
-    return %orig(origIP);
+    WCZZEnsureLogicRows(self);
+    NSIndexPath *origIP = WCZZOriginalIPForVisibleIP(self, ip);
+    return origIP ? %orig(origIP) : %orig(indexPath);
 }
 
 - (id)getCellDataAtIndexPath:(id)indexPath {
     if (WCZZLogicReentry(self)) return %orig(indexPath);
+
     NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
-    if (!ip || ip.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return %orig(indexPath);
-
-    long long original = WCZZLogicOriginalCount(self);
-    NSArray *rows = WCZZLogicRows(self);
-    if (![rows isKindOfClass:[NSArray class]] || original < 0) {
-        WCZZSetLogicReentry(self, YES);
-        @try { original = [self getSessionCountForSection:0]; } @catch (__unused NSException *e) { original = -1; }
-        WCZZSetLogicReentry(self, NO);
-        if (original > 0) {
-            NSMutableArray *folded = nil;
-            rows = WCZZBuildLogicRows(self, original, &folded);
-            WCZZSetLogicRows(self, rows);
-            WCZZSetLogicFoldedRows(self, folded ?: @[]);
-            WCZZSetLogicOriginalCount(self, original);
-        }
+    if (!ip || ip.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) {
+        return %orig(indexPath);
     }
-    if (![rows isKindOfClass:[NSArray class]] || original <= 0 || rows.count >= (NSUInteger)original) return %orig(indexPath);
 
-    BOOL top = WCZZBool(WCZZGroupTopKey, YES);
-    NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
-    if (ip.row == helperRow) {
-        return WCZZBuildHelperCellData(self);
+    WCZZEnsureLogicRows(self);
+    NSIndexPath *origIP = WCZZOriginalIPForVisibleIP(self, ip);
+    return origIP ? %orig(origIP) : %orig(indexPath);
+}
+
+- (long long)getFakeCellCount {
+    long long original = %orig;
+    if (WCZZLogicReentry(self)) return original;
+    if (!WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return original;
+
+    WCZZEnsureLogicRows(self);
+
+    // Do not interfere with WeChat's own fake cells. We only add our row
+    // when the native fake-cell list is empty.
+    return original == 0 && WCZZHasFoldedGroups(self) ? 1 : original;
+}
+
+- (id)getFakeCellData:(unsigned int)index {
+    if (WCZZLogicReentry(self)) return %orig(index);
+    if (!WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return %orig(index);
+
+    WCZZEnsureLogicRows(self);
+
+    WCZZSetLogicReentry(self, YES);
+    long long originalFakeCount = 0;
+    @try { originalFakeCount = [(MainFrameLogicController *)self getFakeCellCount]; }
+    @catch (__unused NSException *e) { originalFakeCount = 0; }
+    WCZZSetLogicReentry(self, NO);
+
+    if (originalFakeCount == 0 && index == 0 && WCZZHasFoldedGroups(self)) {
+        return WCZZBuildFakeCellData(self);
     }
-    NSIndexPath *origIP = WCZZOriginalIPForLogicRow(self, ip);
-    if (origIP) return %orig(origIP);
-    return %orig(indexPath);
+    return %orig(index);
 }
 
 - (void)onDidSelectCellAt:(id)indexPath {
@@ -640,17 +699,24 @@ static id WCZZBuildHelperCellData(id self) {
         %orig(indexPath);
         return;
     }
+
     NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
-    NSArray *rows = WCZZLogicRows(self);
-    long long original = WCZZLogicOriginalCount(self);
-    if (ip && ip.section == 0 && WCZZEnabled() && WCZZBool(WCZZGroupEnabledKey, YES) && [rows isKindOfClass:[NSArray class]] && original > 0 && rows.count < (NSUInteger)original) {
+    if (ip && ip.section == 0 && WCZZHasFoldedGroups(self)) {
         BOOL top = WCZZBool(WCZZGroupTopKey, YES);
-        NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
-        if (ip.row == helperRow) {
+        NSArray *visible = WCZZLogicRows(self);
+
+        // FakeMainFrameCell is represented separately by the main-frame data
+        // source. For the zero-native-fake-cell case, its row is top or bottom.
+        long long fakeRow = top ? 0 : (long long)visible.count;
+        if (ip.row == fakeRow) {
             id delegate = WCZZValue(self, @"m_delegate");
             UIViewController *base = [delegate isKindOfClass:[UIViewController class]] ? (UIViewController *)delegate : nil;
+            if (!base) base = WCZZFindMainController();
+
             UINavigationController *nav = base.navigationController;
-            if (!nav && [base isKindOfClass:[UINavigationController class]]) nav = (UINavigationController *)base;
+            if (!nav && [base isKindOfClass:[UINavigationController class]]) {
+                nav = (UINavigationController *)base;
+            }
             if (nav) {
                 WCZZGroupHelperViewController *vc = [WCZZGroupHelperViewController new];
                 vc.mainController = base;
@@ -658,12 +724,8 @@ static id WCZZBuildHelperCellData(id self) {
             }
             return;
         }
-        NSIndexPath *origIP = WCZZOriginalIPForLogicRow(self, ip);
-        if (origIP) {
-            %orig(origIP);
-            return;
-        }
     }
+
     %orig(indexPath);
 }
 
@@ -672,6 +734,38 @@ static id WCZZBuildHelperCellData(id self) {
     WCZZSetLogicFoldedRows(self, nil);
     WCZZSetLogicOriginalCount(self, -1);
     %orig;
+}
+
+%end
+%end
+
+%group WCZZMainVCSelectionHooks
+%hook NewMainFrameViewController
+
+- (void)handleSelectIndexPath:(id)indexPath tableView:(id)tableView {
+    NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
+    if (ip && ip.section == 0 && WCZZEnabled() && WCZZBool(WCZZGroupEnabledKey, YES)) {
+        id logic = WCZZValue(self, @"m_mainFrameLogicController");
+        Class logicClass = objc_getClass("MainFrameLogicController");
+        if (logic && logicClass && [logic isKindOfClass:logicClass]) {
+            WCZZEnsureLogicRows(logic);
+            if (WCZZHasFoldedGroups(logic)) {
+                BOOL top = WCZZBool(WCZZGroupTopKey, YES);
+                NSArray *visible = WCZZLogicRows(logic);
+                NSInteger helperRow = top ? 0 : (NSInteger)visible.count;
+                if (ip.row == helperRow) {
+                    UINavigationController *nav = self.navigationController;
+                    if (nav) {
+                        WCZZGroupHelperViewController *vc = [WCZZGroupHelperViewController new];
+                        vc.mainController = self;
+                        [nav pushViewController:vc animated:YES];
+                    }
+                    return;
+                }
+            }
+        }
+    }
+    %orig(indexPath, tableView);
 }
 
 %end
@@ -736,34 +830,22 @@ static void WCZZRegisterPlugin(void) {
     if (!c || ![c respondsToSelector:shared]) return;
     id mgr = ((id (*)(id, SEL))objc_msgSend)(c, shared);
     if (!mgr || ![mgr respondsToSelector:reg]) return;
-    ((void (*)(id, SEL, id, id, id))objc_msgSend)(mgr, reg, @"wczz", @"1.0-0", @"WCZZSettingsViewController");
+    ((void (*)(id, SEL, id, id, id))objc_msgSend)(mgr, reg, @"wczz", @"1.0-1", @"WCZZSettingsViewController");
     WCZZRegistered = YES;
 }
 
-static BOOL WCZZMainHooksStarted = NO;
-static BOOL WCZZRedHooksStarted = NO;
+static void WCZZRegisterPlugin(void) {
+    Class c = objc_getClass("WCPluginsMgr");
+    SEL shared = NSSelectorFromString(@"sharedInstance");
+    SEL reg = NSSelectorFromString(@"registerControllerWithTitle:version:controller:");
+    if (!c || ![c respondsToSelector:shared]) return;
 
-static void WCZZInstallHooksWhenReady(void) {
-    if (WCZZMainHooksStarted && WCZZRedHooksStarted) {
-        WCZZRegisterPlugin();
-        return;
-    }
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (!WCZZMainHooksStarted && objc_getClass("MainFrameLogicController")) {
-            %init(WCZZMainLogicHooks);
-            WCZZMainHooksStarted = YES;
-        }
-        if (!WCZZRedHooksStarted && objc_getClass("WCRedEnvelopesRedEnvelopesDetailViewController")) {
-            %init(WCZZRedHooks);
-            WCZZRedHooksStarted = YES;
-        }
-        WCZZRegisterPlugin();
-        if (!WCZZMainHooksStarted || !WCZZRedHooksStarted || !WCZZRegistered) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                WCZZInstallHooksWhenReady();
-            });
-        }
-    });
+    id mgr = ((id (*)(id, SEL))objc_msgSend)(c, shared);
+    if (!mgr || ![mgr respondsToSelector:reg]) return;
+
+    ((void (*)(id, SEL, id, id, id))objc_msgSend)(
+        mgr, reg, @"wczz", @"1.0-2", @"WCZZSettingsViewController"
+    );
 }
 
 %ctor {
@@ -775,8 +857,19 @@ static void WCZZInstallHooksWhenReady(void) {
         if ([d objectForKey:WCZZRedDetailKey] == nil) [d setBool:YES forKey:WCZZRedDetailKey];
         if ([d objectForKey:WCZZCommonRoomsKey] == nil) [d setObject:@[] forKey:WCZZCommonRoomsKey];
         [d synchronize];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            WCZZInstallHooksWhenReady();
+
+        // 8.0.75 headers confirm these classes exist. Initialize Logos
+        // groups directly from the constructor instead of waiting 0.5s and
+        // hoping the class appears later.
+        %init(WCZZMainLogicHooks);
+        %init(WCZZMainVCSelectionHooks);
+        %init(WCZZRedHooks);
+        NSLog(@"[wczz] 8.0.75 hooks installed");
+
+        // Plugin-manager registration can safely happen after the app UI is
+        // alive. The tweak hooks themselves are already active above.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WCZZRegisterPlugin();
         });
     }
 }
