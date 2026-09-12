@@ -4,7 +4,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 
-// wczz 1.0-2
+// wczz 1.0-3
 // Independent implementation. Runtime dependency: WeChat only.
 
 static NSString * const WCZZPluginEnabledKey = @"wczz.plugin.enabled";
@@ -422,180 +422,7 @@ static void WCZZReloadMainList(void) {
 }
 @end
 
-#pragma mark - Main list integration
-// WeChat 8.0.75 exposes two layers here:
-// 1) NewMainFrameViewController.logicGet* methods are the table-facing
-//    wrappers used by the main-frame UI.
-// 2) MainFrameLogicController owns the native fake-cell API.
-//
-// We therefore filter/map real sessions at the VC wrapper layer and only use
-// MainFrameLogicController for the native fake-cell row. This avoids returning
-// FakeMainFrameCellData from a normal session-cell method.
-
-static const void *WCZZRowsCacheKey = &WCZZRowsCacheKey;
-static const void *WCZZOriginalCountCacheKey = &WCZZOriginalCountCacheKey;
-static const void *WCZZFoldedRowsCacheKey = &WCZZFoldedRowsCacheKey;
-static const void *WCZZReentryKey = &WCZZReentryKey;
-static const void *WCZZNativeFakeCountKey = &WCZZNativeFakeCountKey;
-
-static NSArray *WCZZLogicRows(id self) {
-    return objc_getAssociatedObject(self, WCZZRowsCacheKey);
-}
-static void WCZZSetLogicRows(id self, NSArray *rows) {
-    objc_setAssociatedObject(self, WCZZRowsCacheKey, rows ?: @[], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-static long long WCZZLogicOriginalCount(id self) {
-    NSNumber *n = objc_getAssociatedObject(self, WCZZOriginalCountCacheKey);
-    return [n isKindOfClass:[NSNumber class]] ? n.longLongValue : -1;
-}
-static void WCZZSetLogicOriginalCount(id self, long long n) {
-    objc_setAssociatedObject(self, WCZZOriginalCountCacheKey, @(n), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-static NSArray *WCZZLogicFoldedRows(id self) {
-    return objc_getAssociatedObject(self, WCZZFoldedRowsCacheKey);
-}
-static void WCZZSetLogicFoldedRows(id self, NSArray *rows) {
-    objc_setAssociatedObject(self, WCZZFoldedRowsCacheKey, rows ?: @[], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-static BOOL WCZZLogicReentry(id self) {
-    return [objc_getAssociatedObject(self, WCZZReentryKey) boolValue];
-}
-static void WCZZSetLogicReentry(id self, BOOL on) {
-    objc_setAssociatedObject(self, WCZZReentryKey, @(on), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
-static NSArray *WCZZBuildLogicRows(id self, long long originalCount, NSMutableArray **foldedOut) {
-    if (originalCount <= 0) {
-        if (foldedOut) *foldedOut = [NSMutableArray array];
-        return @[];
-    }
-
-    NSMutableArray *visible = [NSMutableArray arrayWithCapacity:(NSUInteger)originalCount];
-    NSMutableArray *folded = [NSMutableArray array];
-
-    WCZZSetLogicReentry(self, YES);
-    for (NSInteger i = 0; i < originalCount; i++) {
-        NSIndexPath *ip = [NSIndexPath indexPathForRow:i inSection:0];
-        id session = nil;
-        @try {
-            session = [(MainFrameLogicController *)self getSessionInfoAtIndexPath:ip];
-        } @catch (__unused NSException *e) {
-            session = nil;
-        }
-
-        // Absolute gate: only usernames ending in @chatroom may be folded.
-        if (WCZZShouldFold(session)) [folded addObject:@(i)];
-        else [visible addObject:@(i)];
-    }
-    WCZZSetLogicReentry(self, NO);
-
-    if (foldedOut) *foldedOut = folded;
-    return visible;
-}
-
-static void WCZZPrepareLogicRows(id self, long long originalCount) {
-    if (originalCount < 0) {
-        WCZZSetLogicRows(self, nil);
-        WCZZSetLogicFoldedRows(self, nil);
-        WCZZSetLogicOriginalCount(self, -1);
-        return;
-    }
-
-    if (!WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES) || originalCount == 0) {
-        WCZZSetLogicRows(self, nil);
-        WCZZSetLogicFoldedRows(self, nil);
-        WCZZSetLogicOriginalCount(self, originalCount);
-        return;
-    }
-
-    NSMutableArray *folded = nil;
-    NSArray *visible = WCZZBuildLogicRows(self, originalCount, &folded);
-    WCZZSetLogicRows(self, visible);
-    WCZZSetLogicFoldedRows(self, folded ?: @[]);
-    WCZZSetLogicOriginalCount(self, originalCount);
-}
-
-static BOOL WCZZEnsureLogicRows(id self) {
-    if (!self) return NO;
-    long long original = WCZZLogicOriginalCount(self);
-    return original >= 0 && [WCZZLogicRows(self) isKindOfClass:[NSArray class]];
-}
-
-static NSIndexPath *WCZZOriginalIPForVisibleIP(id self, NSIndexPath *ip) {
-    if (!ip || ip.section != 0) return nil;
-    NSArray *rows = WCZZLogicRows(self);
-    if (![rows isKindOfClass:[NSArray class]]) return nil;
-    if (ip.row < 0 || ip.row >= (NSInteger)rows.count) return nil;
-
-    NSInteger originalRow = [rows[(NSUInteger)ip.row] integerValue];
-    return [NSIndexPath indexPathForRow:originalRow inSection:ip.section];
-}
-
-static BOOL WCZZHasFoldedGroups(id self) {
-    NSArray *folded = WCZZLogicFoldedRows(self);
-    return WCZZEnabled() &&
-           WCZZBool(WCZZGroupEnabledKey, YES) &&
-           [folded isKindOfClass:[NSArray class]] && folded.count > 0;
-}
-
-static id WCZZBuildFakeCellData(id self) {
-    // FakeMainFrameCellData is a private WeChat class. Do not reference it
-    // directly in compiled Objective-C code: that creates an undefined
-    // _OBJC_CLASS_$_FakeMainFrameCellData linker dependency. Resolve it only
-    // at runtime so the tweak can load even though the class lives inside
-    // WeChat rather than the SDK/frameworks linked by Theos.
-    Class fakeClass = objc_getClass("FakeMainFrameCellData");
-    if (!fakeClass) return nil;
-
-    id data = [[fakeClass alloc] init];
-    if (!data) return nil;
-
-    NSArray *foldedRows = WCZZLogicFoldedRows(self);
-    NSUInteger groupCount = foldedRows.count;
-
-    unsigned long long unreadTotal = 0;
-    NSString *latestMessage = nil;
-    NSString *latestTime = nil;
-
-    for (NSNumber *n in foldedRows) {
-        NSInteger row = n.integerValue;
-        NSIndexPath *ip = [NSIndexPath indexPathForRow:row inSection:0];
-        id session = nil;
-        id cellData = nil;
-
-        WCZZSetLogicReentry(self, YES);
-        @try { session = [(MainFrameLogicController *)self getSessionInfoAtIndexPath:ip]; } @catch (__unused NSException *e) {}
-        @try { cellData = [(MainFrameLogicController *)self getCellDataAtIndexPath:ip]; } @catch (__unused NSException *e) {}
-        WCZZSetLogicReentry(self, NO);
-
-        NSString *username = WCZZUsername(session);
-        if (!WCZZIsGroupUsername(username)) continue;
-
-        unreadTotal += (unsigned long long)[WCZZValue(session, @"m_uUnReadCount") unsignedIntValue];
-
-        id msg = WCZZValue(cellData, @"m_textForMessageLabel");
-        if (!msg) msg = WCZZValue(cellData, @"textForMessageLabel");
-        if ([msg isKindOfClass:[NSString class]] && [(NSString *)msg length] > 0) latestMessage = msg;
-
-        id time = WCZZValue(cellData, @"m_textForTimeLabel");
-        if (!time) time = WCZZValue(cellData, @"textForTimeLabel");
-        if ([time isKindOfClass:[NSString class]] && [(NSString *)time length] > 0) latestTime = time;
-    }
-
-    NSString *message = [NSString stringWithFormat:@"%lu 个群", (unsigned long)groupCount];
-    if (unreadTotal > 0) message = [NSString stringWithFormat:@"%@ · %llu 条未读", message, unreadTotal];
-    if (latestMessage.length > 0) message = [NSString stringWithFormat:@"%@ · %@", message, latestMessage];
-
-    [data setValue:WCZZGroupUserName forKey:@"userName"];
-    [data setValue:@"群助手" forKey:@"textForNameLabel"];
-    [data setValue:message forKey:@"textForMessageLabel"];
-    [data setValue:(latestTime ?: @"") forKey:@"textForTimeLabel"];
-    [data setValue:@0 forKey:@"widthForNameLabel"];
-    [data setValue:@YES forKey:@"bNormalCell"];
-    [data setValue:@(WCZZBool(WCZZGroupTopKey, YES)) forKey:@"bTopCell"];
-    return data;
-}
-
+#pragma mark - Main list integration (v27 direct UITableView engine)
 
 #pragma mark - v27 main list engine
 //
@@ -622,9 +449,8 @@ static void WCZZClearRows(id vc) {
 static NSArray *WCZZVisibleOriginalRows(id vc, long long originalCount) {
     if (!vc || originalCount <= 0) return @[];
 
-    id logic = WCZZValue(vc, @"m_mainFrameLogicController");
     SEL logicSessionSel = NSSelectorFromString(@"logicGetSessionAtIndexPath:");
-    if (!logic || ![vc respondsToSelector:logicSessionSel]) return nil;
+    if (![vc respondsToSelector:logicSessionSel]) return nil;
 
     NSMutableArray *rows = [NSMutableArray arrayWithCapacity:(NSUInteger)originalCount];
     for (long long r = 0; r < originalCount; r++) {
@@ -676,9 +502,8 @@ static NSArray *WCZZEnsureRows(id vc) {
     long long cachedCount = WCZZCachedOriginalCount(vc);
     if (rows && cachedCount >= 0) return rows;
 
-    id logic = WCZZValue(vc, @"m_mainFrameLogicController");
     SEL countSel = NSSelectorFromString(@"logicGetCountForSection:");
-    if (!logic || ![vc respondsToSelector:countSel]) return nil;
+    if (![vc respondsToSelector:countSel]) return nil;
 
     long long count = -1;
     @try {
@@ -799,7 +624,7 @@ static void WCZZOpenHelper(id vc) {
     if (!rows) return original;
 
     if ((long long)rows.count == original) return original;
-    return original - (original - (long long)rows.count) + 1;
+    return (long long)rows.count + 1;
 }
 
 - (id)tableView:(id)tableView cellForRowAtIndexPath:(id)indexPath {
