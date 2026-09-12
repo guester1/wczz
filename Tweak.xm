@@ -830,17 +830,7 @@ static void WCZZApplyRedDetailFromData(id vc, id data) {
 static BOOL WCZZRegistered = NO;
 static void WCZZRegisterPlugin(void) {
     if (WCZZRegistered) return;
-    Class c = objc_getClass("WCPluginsMgr");
-    SEL shared = NSSelectorFromString(@"sharedInstance");
-    SEL reg = NSSelectorFromString(@"registerControllerWithTitle:version:controller:");
-    if (!c || ![c respondsToSelector:shared]) return;
-    id mgr = ((id (*)(id, SEL))objc_msgSend)(c, shared);
-    if (!mgr || ![mgr respondsToSelector:reg]) return;
-    ((void (*)(id, SEL, id, id, id))objc_msgSend)(mgr, reg, @"wczz", @"1.0-1", @"WCZZSettingsViewController");
-    WCZZRegistered = YES;
-}
 
-static void WCZZRegisterPlugin(void) {
     Class c = objc_getClass("WCPluginsMgr");
     SEL shared = NSSelectorFromString(@"sharedInstance");
     SEL reg = NSSelectorFromString(@"registerControllerWithTitle:version:controller:");
@@ -852,6 +842,7 @@ static void WCZZRegisterPlugin(void) {
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(
         mgr, reg, @"wczz", @"1.0-2", @"WCZZSettingsViewController"
     );
+    WCZZRegistered = YES;
 }
 
 %ctor {
