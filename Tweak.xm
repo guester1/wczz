@@ -617,12 +617,6 @@ static void WCZZReloadMainList(void) {
 
     BOOL top = WCZZBool(WCZZGroupTopKey, YES);
     long long result = (long long)visible.count + 1;
-    WCZZLog(@"getSessionCount original=%lld visible=%lu folded=%lu helper=%@ result=%lld",
-            original,
-            (unsigned long)visible.count,
-            (unsigned long)folded.count,
-            top ? @"TOP" : @"BOTTOM",
-            result);
     return result;
 }
 
@@ -680,8 +674,6 @@ static void WCZZReloadMainList(void) {
     if (![rows isKindOfClass:[NSArray class]] || folded.count == 0) return original;
 
     unsigned int result = (unsigned int)rows.count + 1U;
-    WCZZLog(@"getVisibleSessionCount original=%u visible=%lu folded=%lu result=%u",
-            original, (unsigned long)rows.count, (unsigned long)folded.count, result);
     return result;
 }
 
@@ -948,6 +940,107 @@ static void WCZZReloadMainList(void) {
     return %orig(indexPath);
 }
 
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    NSInteger original = %orig(tableView, section);
+    if (section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return original;
+
+    id logic = WCZZValue(self, @"m_mainFrameLogicController");
+    if (!logic) return original;
+
+    long long count = original;
+    @try {
+        count = [(MainFrameLogicController *)logic getSessionCountForSection:0];
+    } @catch (__unused NSException *e) {}
+
+    if (count > 0 && count != original) {
+        WCZZLog(@"table rows override original=%ld filtered=%lld", (long)original, count);
+        return (NSInteger)count;
+    }
+    return original;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (!indexPath || indexPath.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) {
+        return %orig(tableView, indexPath);
+    }
+
+    id logic = WCZZValue(self, @"m_mainFrameLogicController");
+    NSArray *rows = logic ? WCZZLogicRows(logic) : nil;
+    NSArray *folded = logic ? WCZZLogicFolded(logic) : nil;
+    if (logic && (![rows isKindOfClass:[NSArray class]] || ![folded isKindOfClass:[NSArray class]])) {
+        @try { (void)[(MainFrameLogicController *)logic getSessionCountForSection:0]; } @catch (__unused NSException *e) {}
+        rows = WCZZLogicRows(logic);
+        folded = WCZZLogicFolded(logic);
+    }
+    if (![rows isKindOfClass:[NSArray class]] || ![folded isKindOfClass:[NSArray class]] || folded.count == 0) {
+        return %orig(tableView, indexPath);
+    }
+
+    BOOL top = WCZZBool(WCZZGroupTopKey, YES);
+    NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
+    if (indexPath.row == helperRow) {
+        // Let WeChat build its normal session cell. Our logicGetCellDataAtIndexPath:
+        // hook supplies the synthetic 群助手 data for this row.
+        WCZZLog(@"table helper cell row=%ld", (long)indexPath.row);
+        return %orig(tableView, indexPath);
+    }
+
+    NSIndexPath *mapped = WCZZOriginalIPForLogicRow(logic, indexPath);
+    if (!mapped) return %orig(tableView, indexPath);
+
+    if (mapped.row != indexPath.row) {
+        WCZZSetLogicReentry(logic, YES);
+        UITableViewCell *cell = %orig(tableView, mapped);
+        WCZZSetLogicReentry(logic, NO);
+        return cell;
+    }
+    return %orig(tableView, indexPath);
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (!indexPath || indexPath.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) {
+        %orig(tableView, indexPath);
+        return;
+    }
+
+    id logic = WCZZValue(self, @"m_mainFrameLogicController");
+    NSArray *rows = logic ? WCZZLogicRows(logic) : nil;
+    NSArray *folded = logic ? WCZZLogicFolded(logic) : nil;
+    if (logic && (![rows isKindOfClass:[NSArray class]] || ![folded isKindOfClass:[NSArray class]])) {
+        @try { (void)[(MainFrameLogicController *)logic getSessionCountForSection:0]; } @catch (__unused NSException *e) {}
+        rows = WCZZLogicRows(logic);
+        folded = WCZZLogicFolded(logic);
+    }
+    if (![rows isKindOfClass:[NSArray class]] || ![folded isKindOfClass:[NSArray class]] || folded.count == 0) {
+        %orig(tableView, indexPath);
+        return;
+    }
+
+    BOOL top = WCZZBool(WCZZGroupTopKey, YES);
+    NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
+    if (indexPath.row == helperRow) {
+        UIViewController *base = self;
+        UINavigationController *nav = self.navigationController;
+        if (nav) {
+            WCZZGroupHelperViewController *vc = [WCZZGroupHelperViewController new];
+            vc.mainController = base;
+            [nav pushViewController:vc animated:YES];
+            WCZZLog(@"table helper selected folded=%lu", (unsigned long)folded.count);
+        }
+        return;
+    }
+
+    NSIndexPath *mapped = WCZZOriginalIPForLogicRow(logic, indexPath);
+    if (!mapped) return;
+    if (mapped.row != indexPath.row) {
+        WCZZSetLogicReentry(logic, YES);
+        %orig(tableView, mapped);
+        WCZZSetLogicReentry(logic, NO);
+        return;
+    }
+    %orig(tableView, indexPath);
+}
+
 - (void)handleSelectIndexPath:(id)indexPath tableView:(id)tableView {
     NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
     if (!ip || ip.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) {
@@ -1051,7 +1144,7 @@ static void WCZZLayoutRedSummaryLabel(id vc) {
     CGFloat width = MIN(280.0, MAX(230.0, root.bounds.size.width * 0.68));
     CGFloat height = 102.0;
     CGFloat x = (root.bounds.size.width - width) * 0.5;
-    CGFloat y = 45.0;
+    CGFloat y = 40.0;
     label.frame = CGRectMake(x, y, width, height);
 }
 
@@ -1251,7 +1344,7 @@ static void WCZZInstallHooksWhenReady(void) {
         if ([d objectForKey:WCZZDebugEnabledKey] == nil) [d setBool:NO forKey:WCZZDebugEnabledKey];
         if ([d objectForKey:WCZZDebugLogsKey] == nil) [d setObject:@[] forKey:WCZZDebugLogsKey];
         [d synchronize];
-        WCZZLog(@"v1.0-19 constructor");
+        WCZZLog(@"v1.0-24 constructor");
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCZZInstallHooksWhenReady(); });
     }
 }
