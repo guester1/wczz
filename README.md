@@ -1,25 +1,25 @@
-# wczz 1.0-32
+# wczz 1.0-33
 
-Independent WeChat 8.0.75 tweak.
+Independent WeChat 8.0.75 group assistant tweak.
 
-## 1.0-27 changes
-- Main session filtering moved to NewMainFrameViewController logicGetCountForSection / logicGetSessionAtIndexPath / logicGetCellDataAtIndexPath / handleSelectIndexPath, which is the table-facing data boundary in WeChat 8.0.75.
-- Removed the previous MainFrameLogicController logical-row hook path to avoid a hook that can be installed successfully but never be queried by the main table.
-- Main session list is explicitly reloaded after hook installation and on main VC appearance/session rebuild.
-- Only usernames ending in @chatroom are candidates; common groups stay in the normal list.
-- Group helper uses native MMBaseSessionTableViewCell when available.
-- Red-envelope hooks now cover both receive initializers and the base showDetailView path, and retry locating the detail label after view creation.
-- No WeChat native foldSession/foldSessionByNames calls.
+## Group Assistant behavior
+- Only usernames ending with `@chatroom` are eligible for folding. Friends and other non-group sessions are never folded.
+- Groups in the “常用群” whitelist remain in the normal WeChat session list.
+- Other group chats are removed from the normal homepage data boundary and represented by exactly one “群助手” row.
+- “群助手” uses the native `MMBaseSessionTableViewCell`/`MMBaseSessionCellData` path, with a blue envelope icon, total unread count, latest folded-group message, and latest time.
+- Opening “群助手” shows only the folded groups, using native WeChat session cells and sorted by latest message time.
+- Opening a group from the assistant calls the original WeChat session-opening path.
+- The main-list helper data is not returned through `MainFrameLogicController`’s normal cell-data boundary, avoiding a `MMBaseSessionCellData`/`MainFrameCellData` type mismatch.
 
+## 1.0-33 fixes
+- Resolve sessions by exact username through `MMNewSessionMgr GetSessionByUserName:` before using positional fallback, reducing row-index misclassification.
+- Keep the folding predicate strict: `@chatroom` + not in common-group whitelist.
+- Select the newest folded group for the helper row preview instead of the first folded row.
+- Remove an existing native `[N条]` prefix before adding the aggregate unread count, preventing duplicated counts such as `[653条] [446条] ...`.
+- Keep native helper-cell rendering isolated to the table-cell boundary; logical cell-data APIs return `nil` for the synthetic helper row.
+- Preserve native group cells inside the assistant page.
 
-## 1.0-27 修正
-- 主列表过滤恢复到 WeChat 8.0.75 实际使用的 MainFrameLogicController 数据边界。
-- 仅过滤 `@chatroom` 且不在常用群白名单中的会话。
-- 群助手行通过 FakeMainFrameCellData 接入微信原生会话列表。
-- 红包统计改为独立顶部覆盖 UILabel，不修改微信原有的 `m_receivedInfoLable`，因此不会覆盖“谁发的红包”和金额。
-
-
-## 1.0-27 修正
-- 修复 WeChat 8.0.75 中 getSessionInfoAtIndexPath: 返回 nil 导致群助手永远无法识别群聊的问题。现在依次从 session info、cell data 的 userName、MMNewSessionMgr 的 GetSessionInfoList 恢复会话用户名。
-- 增加 getSessionBaseInfoAtIndexPath: 的同一行映射。
-- 红包四行统计保持独立顶部 UILabel，不再修改微信原生发红包人/金额内容。统计位置上移到红色顶部区域，并增加高度确保四行完整显示。
+## Compatibility
+- Target: WeChat 8.0.75
+- Minimum iOS: 15.0
+- Architectures: arm64 / arm64e

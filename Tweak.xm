@@ -114,20 +114,33 @@ static NSString *WCZZDisplayName(id contact) {
 
 #pragma mark - Session service
 
-static NSArray *WCZZSessionList(void) {
+static id WCZZSessionManager(void) {
     Class ctxClass = objc_getClass("MMContext");
     Class mgrClass = objc_getClass("MMNewSessionMgr");
     SEL current = NSSelectorFromString(@"currentContext");
     SEL service = NSSelectorFromString(@"getService:");
-    SEL listSel = NSSelectorFromString(@"GetSessionInfoList");
-    if (!ctxClass || !mgrClass || ![ctxClass respondsToSelector:current]) return @[];
+    if (!ctxClass || !mgrClass || ![ctxClass respondsToSelector:current]) return nil;
     id ctx = ((id (*)(id, SEL))objc_msgSend)(ctxClass, current);
     id center = WCZZValue(ctx, @"serviceCenter");
-    if (!center || ![center respondsToSelector:service]) return @[];
-    id mgr = ((id (*)(id, SEL, Class))objc_msgSend)(center, service, mgrClass);
+    if (!center || ![center respondsToSelector:service]) return nil;
+    return ((id (*)(id, SEL, Class))objc_msgSend)(center, service, mgrClass);
+}
+
+static NSArray *WCZZSessionList(void) {
+    id mgr = WCZZSessionManager();
+    SEL listSel = NSSelectorFromString(@"GetSessionInfoList");
     if (!mgr || ![mgr respondsToSelector:listSel]) return @[];
     id list = ((id (*)(id, SEL))objc_msgSend)(mgr, listSel);
     return [list isKindOfClass:[NSArray class]] ? list : @[];
+}
+
+static id WCZZSessionByUsername(NSString *username) {
+    if (!username.length) return nil;
+    id mgr = WCZZSessionManager();
+    SEL sel = NSSelectorFromString(@"GetSessionByUserName:");
+    if (!mgr || ![mgr respondsToSelector:sel]) return nil;
+    @try { return ((id (*)(id, SEL, id))objc_msgSend)(mgr, sel, username); } @catch (__unused NSException *e) {}
+    return nil;
 }
 static void WCZZMarkRead(NSString *username) {
     if (!username.length) return;
@@ -581,6 +594,12 @@ static NSArray *WCZZBuildLogicRows(id obj, long long originalCount, NSMutableArr
         }
 
         if (!session && username.length) {
+            // Resolve by username before falling back to the service-list index.
+            // This prevents a top/pinned/fake row from shifting the service-list
+            // index and accidentally classifying a different chat as a group.
+            session = WCZZSessionByUsername(username);
+        }
+        if (!session && username.length) {
             for (id candidate in serviceSessions) {
                 if ([WCZZUsername(candidate) isEqualToString:username]) {
                     session = candidate;
@@ -649,15 +668,20 @@ static NSIndexPath *WCZZOriginalIPForLogicRow(id obj, NSIndexPath *visibleIP) {
     return [NSIndexPath indexPathForRow:originalRow inSection:0];
 }
 
+static NSString *WCZZCleanHelperMessage(NSString *text) {
+    if (![text isKindOfClass:[NSString class]] || !text.length) return @"";
+    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"^\\[[0-9]+条\\]\\s*" options:0 error:NULL];
+    return [re stringByReplacingMatchesInString:text options:0 range:NSMakeRange(0, text.length) withTemplate:@""];
+}
+
 static id WCZZBuildHelperCellData(id obj) {
     NSArray *folded = WCZZLogicFolded(obj);
     if (![folded isKindOfClass:[NSArray class]] || folded.count == 0) return nil;
 
     id templateData = nil;
-    id templateSession = nil;
+    id latestSession = nil;
+    NSTimeInterval latestStamp = -1.0;
     unsigned long long unreadTotal = 0;
-    NSString *latestMessage = nil;
-    NSString *latestTime = nil;
 
     for (NSNumber *n in folded) {
         NSIndexPath *ip = [NSIndexPath indexPathForRow:n.integerValue inSection:0];
@@ -666,41 +690,31 @@ static id WCZZBuildHelperCellData(id obj) {
         @try { session = [(MainFrameLogicController *)obj getSessionInfoAtIndexPath:ip]; } @catch (__unused NSException *e) {}
         WCZZSetLogicReentry(obj, NO);
 
-        unreadTotal += (unsigned long long)[WCZZValue(session, @"m_uUnReadCount") unsignedIntValue];
-        if (!templateSession && session) templateSession = session;
+        NSString *username = WCZZUsername(session);
+        if (!username.length || !WCZZIsGroupUsername(username) || WCZZIsCommonRoom(username)) continue;
 
-        if (!templateData && session) {
-            NSString *username = WCZZUsername(session);
-            if (username.length) templateData = WCZZSessionCellDataForUsername(username);
+        unreadTotal += (unsigned long long)[WCZZValue(session, @"m_uUnReadCount") unsignedIntValue];
+
+        if (!templateData) {
+            id native = WCZZSessionCellDataForUsername(username);
+            Class nativeDataClass = objc_getClass("MMBaseSessionCellData");
+            if (native && nativeDataClass && [native isKindOfClass:nativeDataClass]) templateData = native;
         }
 
-        if (!latestMessage.length) {
-            id data = nil;
-            if (session) {
-                NSString *username = WCZZUsername(session);
-                if (username.length) data = WCZZSessionCellDataForUsername(username);
-            }
-            id m = WCZZValue(data, @"textForMsgLabel");
-            if (![m isKindOfClass:[NSString class]] || ![m length]) m = WCZZValue(data, @"m_textForMsgLabel");
-            if ([m isKindOfClass:[NSString class]] && [m length]) latestMessage = m;
-            if (!latestTime.length) {
-                id t = WCZZValue(data, @"textForTimeLabel");
-                if (![t isKindOfClass:[NSString class]] || ![t length]) t = WCZZValue(data, @"m_textForTimeLabel");
-                if ([t isKindOfClass:[NSString class]] && [t length]) latestTime = t;
-            }
+        NSTimeInterval stamp = WCZZSessionLastMessageTime(session);
+        if (!latestSession || stamp > latestStamp) {
+            latestSession = session;
+            latestStamp = stamp;
         }
     }
 
-    if (!templateData) {
-        WCZZLog(@"helper data: no native MMBaseSessionCellData template");
+    if (!templateData || !latestSession) {
+        WCZZLog(@"helper data: no valid folded group/native template");
         return nil;
     }
 
     Class nativeDataClass = objc_getClass("MMBaseSessionCellData");
-    if (!nativeDataClass || ![templateData isKindOfClass:nativeDataClass]) {
-        WCZZLog(@"helper data: template class=%@ is not MMBaseSessionCellData", NSStringFromClass([templateData class]));
-        return nil;
-    }
+    if (!nativeDataClass || ![templateData isKindOfClass:nativeDataClass]) return nil;
 
     static BOOL WCZZDumpedData = NO;
     if (!WCZZDumpedData) {
@@ -718,13 +732,24 @@ static id WCZZBuildHelperCellData(id obj) {
         if (ivars) free(ivars);
     }
 
-    id data = nil;
-    @try { data = [templateData copy]; } @catch (__unused NSException *e) {}
-    if (!data) data = templateData;
+    NSString *latestMessage = nil;
+    NSString *latestTime = nil;
+    NSString *latestUsername = WCZZUsername(latestSession);
+    id latestData = WCZZSessionCellDataForUsername(latestUsername);
+    id m = WCZZValue(latestData, @"textForMsgLabel");
+    if (![m isKindOfClass:[NSString class]] || !m.length) m = WCZZValue(latestData, @"m_textForMsgLabel");
+    if ([m isKindOfClass:[NSString class]]) latestMessage = WCZZCleanHelperMessage(m);
+    id t = WCZZValue(latestData, @"textForTimeLabel");
+    if (![t isKindOfClass:[NSString class]] || !t.length) t = WCZZValue(latestData, @"m_textForTimeLabel");
+    if ([t isKindOfClass:[NSString class]]) latestTime = t;
 
     NSString *message = latestMessage.length
         ? [NSString stringWithFormat:@"[%llu条] %@", unreadTotal, latestMessage]
         : [NSString stringWithFormat:@"[%llu条]", unreadTotal];
+
+    id data = nil;
+    @try { data = [templateData copy]; } @catch (__unused NSException *e) {}
+    if (!data) return nil;
 
     @try {
         [data setValue:WCZZGroupUserName forKey:@"m_userName"];
@@ -734,14 +759,14 @@ static id WCZZBuildHelperCellData(id obj) {
         [data setValue:@(MIN(unreadTotal, UINT_MAX)) forKey:@"m_unreadCount"];
         [data setValue:@(0U) forKey:@"m_msgStatus"];
         [data setValue:@((unsigned int)[[NSDate date] timeIntervalSince1970]) forKey:@"m_updateTime"];
-    } @catch (__unused NSException *e) {}
+    } @catch (__unused NSException *e) { return nil; }
 
     Class infoClass = objc_getClass("MMBaseSessionInfo");
-    if (infoClass && templateSession) {
+    if (infoClass) {
         SEL baseSel = NSSelectorFromString(@"baseSessionInfoWithUsrName:contact:lastMessage:unreadCount:");
         if ([infoClass respondsToSelector:baseSel]) {
-            id contact = WCZZContact(templateSession);
-            id lastMessage = WCZZValue(templateSession, @"m_msgWrap");
+            id contact = WCZZContact(latestSession);
+            id lastMessage = WCZZValue(latestSession, @"m_msgWrap");
             @try {
                 id baseInfo = ((id (*)(id, SEL, id, id, id, unsigned int))objc_msgSend)(infoClass, baseSel, WCZZGroupUserName, contact, lastMessage, (unsigned int)MIN(unreadTotal, UINT_MAX));
                 if (baseInfo) [data setValue:baseInfo forKey:@"m_baseSessionInfo"];
@@ -753,23 +778,20 @@ static id WCZZBuildHelperCellData(id obj) {
     if (!helperHeadImage) {
         CGSize size = CGSizeMake(60.0, 60.0);
         UIGraphicsBeginImageContextWithOptions(size, NO, 0.0);
-        CGContextRef ctx = UIGraphicsGetCurrentContext();
-        if (ctx) {
-            UIBezierPath *bg = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, size.width, size.height) cornerRadius:8.0];
-            [[UIColor colorWithRed:0.13 green:0.55 blue:0.95 alpha:1.0] setFill];
-            [bg fill];
-            [[UIColor whiteColor] setStroke];
-            CGFloat x = 13.0, y = 17.0, w = 34.0, h = 25.0;
-            UIBezierPath *env = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(x, y, w, h) cornerRadius:3.0];
-            env.lineWidth = 3.0;
-            [env stroke];
-            UIBezierPath *left = [UIBezierPath bezierPath];
-            [left moveToPoint:CGPointMake(x + 2.0, y + 3.0)];
-            [left addLineToPoint:CGPointMake(x + w * 0.5, y + h * 0.58)];
-            [left addLineToPoint:CGPointMake(x + w - 2.0, y + 3.0)];
-            left.lineWidth = 3.0;
-            [left stroke];
-        }
+        UIBezierPath *bg = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, size.width, size.height) cornerRadius:8.0];
+        [[UIColor colorWithRed:0.13 green:0.55 blue:0.95 alpha:1.0] setFill];
+        [bg fill];
+        [[UIColor whiteColor] setStroke];
+        CGFloat x = 13.0, y = 17.0, w = 34.0, h = 25.0;
+        UIBezierPath *env = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(x, y, w, h) cornerRadius:3.0];
+        env.lineWidth = 3.0;
+        [env stroke];
+        UIBezierPath *left = [UIBezierPath bezierPath];
+        [left moveToPoint:CGPointMake(x + 2.0, y + 3.0)];
+        [left addLineToPoint:CGPointMake(x + w * 0.5, y + h * 0.58)];
+        [left addLineToPoint:CGPointMake(x + w - 2.0, y + 3.0)];
+        left.lineWidth = 3.0;
+        [left stroke];
         helperHeadImage = UIGraphicsGetImageFromCurrentImageContext();
         UIGraphicsEndImageContext();
     }
@@ -777,6 +799,7 @@ static id WCZZBuildHelperCellData(id obj) {
 
     return data;
 }
+
 static void WCZZReloadMainList(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIViewController *main = WCZZFindMainController();
@@ -935,7 +958,7 @@ static void WCZZReloadMainList(void) {
 
     BOOL top = WCZZBool(WCZZGroupTopKey, YES);
     NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
-    if (ip.row == helperRow) return WCZZBuildHelperCellData(self);
+    if (ip.row == helperRow) return nil;
 
     NSIndexPath *origIP = WCZZOriginalIPForLogicRow(self, ip);
     if (origIP) return %orig(origIP);
@@ -1102,7 +1125,7 @@ static void WCZZReloadMainList(void) {
     }
     BOOL top = WCZZBool(WCZZGroupTopKey, YES);
     NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
-    if (ip.row == helperRow && folded.count > 0) return WCZZBuildHelperCellData(logic);
+    if (ip.row == helperRow && folded.count > 0) return nil;
     NSIndexPath *mapped = WCZZOriginalIPForLogicRow(logic, ip);
     if (!mapped) return nil;
     if (mapped.row != ip.row) {
@@ -1497,7 +1520,7 @@ static void WCZZRegisterPlugin(void) {
     if (!c || ![c respondsToSelector:shared]) return;
     id mgr = ((id (*)(id, SEL))objc_msgSend)(c, shared);
     if (!mgr || ![mgr respondsToSelector:reg]) return;
-    ((void (*)(id, SEL, id, id, id))objc_msgSend)(mgr, reg, @"wczz", @"1.0-32", @"WCZZSettingsViewController");
+    ((void (*)(id, SEL, id, id, id))objc_msgSend)(mgr, reg, @"wczz", @"1.0-33", @"WCZZSettingsViewController");
     WCZZRegistered = YES;
     WCZZLog(@"plugin registration OK");
 }
