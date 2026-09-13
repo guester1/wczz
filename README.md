@@ -1,11 +1,12 @@
-# wczz 1.0-11
+# wczz 1.0-13
 
 Independent WeChat 8.0.75 tweak.
 
-- Main list filtering is implemented at `MainFrameLogicController`, not UITableView.
-- Only usernames ending in `@chatroom` are eligible.
-- Common groups stay in the normal list.
-- The synthetic `群助手` row can be top or bottom.
-- The helper uses WeChat's `MMBaseSessionTableViewCell` and session cell data when available, so group rows retain native avatar collage, unread badge, message preview, time and mute/status presentation.
-- No WeChat native top-session folding is triggered, avoiding the previous `置顶聊天` row and reload/animation flicker.
-- Red-envelope hooks are installed after the relevant WeChat classes become available.
+## 1.0-13 changes
+- Main session filtering moved to NewMainFrameViewController logicGetCountForSection / logicGetSessionAtIndexPath / logicGetCellDataAtIndexPath / handleSelectIndexPath, which is the table-facing data boundary in WeChat 8.0.75.
+- Removed the previous MainFrameLogicController logical-row hook path to avoid a hook that can be installed successfully but never be queried by the main table.
+- Main session list is explicitly reloaded after hook installation and on main VC appearance/session rebuild.
+- Only usernames ending in @chatroom are candidates; common groups stay in the normal list.
+- Group helper uses native MMBaseSessionTableViewCell when available.
+- Red-envelope hooks now cover both receive initializers and the base showDetailView path, and retry locating the detail label after view creation.
+- No WeChat native foldSession/foldSessionByNames calls.

@@ -30,7 +30,8 @@ static void WCZZSetBool(NSString *key, BOOL value) {
 }
 static BOOL WCZZEnabled(void) { return WCZZBool(WCZZPluginEnabledKey, YES); }
 static BOOL WCZZDebugEnabled(void) { return WCZZBool(WCZZDebugEnabledKey, NO); }
-static void WCZZInvalidateMainLogicCache(void);
+static void WCZZReloadMainList(void);
+static void WCZZInvalidateMainLogicCache(void) { WCZZReloadMainList(); }
 static NSArray *WCZZCommonRooms(void) {
     id v = [[NSUserDefaults standardUserDefaults] objectForKey:WCZZCommonRoomsKey];
     return [v isKindOfClass:[NSArray class]] ? v : @[];
@@ -389,208 +390,248 @@ static id WCZZSessionCellDataForUsername(NSString *username) {
 
 #pragma mark - Main list logical filtering
 
-static const void *WCZZRowsKey = &WCZZRowsKey;
-static const void *WCZZOriginalCountKey = &WCZZOriginalCountKey;
-static const void *WCZZFoldedKey = &WCZZFoldedKey;
-static const void *WCZZReentryKey = &WCZZReentryKey;
+// IMPORTANT: WeChat 8.0.75's actual table data-source boundary is
+// NewMainFrameViewController's logicGet* methods.  MainFrameLogicController
+// owns the data, but the main table asks the VC for the visible rows.
+// Therefore filtering is done here instead of hooking the native fold system.
 
-static BOOL WCZZReentry(id logic) { return [objc_getAssociatedObject(logic, WCZZReentryKey) boolValue]; }
-static void WCZZSetReentry(id logic, BOOL on) { objc_setAssociatedObject(logic, WCZZReentryKey, @(on), OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
-static NSArray *WCZZRows(id logic) { return objc_getAssociatedObject(logic, WCZZRowsKey); }
-static NSArray *WCZZFoldedRows(id logic) { return objc_getAssociatedObject(logic, WCZZFoldedKey); }
-static void WCZZClearRows(id logic) { objc_setAssociatedObject(logic, WCZZRowsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); objc_setAssociatedObject(logic, WCZZFoldedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); objc_setAssociatedObject(logic, WCZZOriginalCountKey, @(-1), OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
-static long long WCZZOriginalCount(id logic) { return [objc_getAssociatedObject(logic, WCZZOriginalCountKey) longLongValue]; }
-static void WCZZSetOriginalCount(id logic, long long n) { objc_setAssociatedObject(logic, WCZZOriginalCountKey, @(n), OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+static const void *WCZZVCRowsKey = &WCZZVCRowsKey;
+static const void *WCZZVCFoldedKey = &WCZZVCFoldedKey;
+static const void *WCZZVCOriginalCountKey = &WCZZVCOriginalCountKey;
+static const void *WCZZVCReentryKey = &WCZZVCReentryKey;
 
-static void WCZZBuildRows(id logic, long long originalCount) {
-    if (originalCount <= 0) { WCZZClearRows(logic); WCZZSetOriginalCount(logic, originalCount); return; }
+static BOOL WCZZVCReentry(id vc) {
+    return [objc_getAssociatedObject(vc, WCZZVCReentryKey) boolValue];
+}
+static void WCZZSetVCReentry(id vc, BOOL on) {
+    objc_setAssociatedObject(vc, WCZZVCReentryKey, @(on), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+static NSArray *WCZZVCRows(id vc) { return objc_getAssociatedObject(vc, WCZZVCRowsKey); }
+static NSArray *WCZZVCFolded(id vc) { return objc_getAssociatedObject(vc, WCZZVCFoldedKey); }
+static long long WCZZVCOriginalCount(id vc) { return [objc_getAssociatedObject(vc, WCZZVCOriginalCountKey) longLongValue]; }
+static void WCZZClearVCRows(id vc) {
+    objc_setAssociatedObject(vc, WCZZVCRowsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(vc, WCZZVCFoldedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(vc, WCZZVCOriginalCountKey, @(-1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static id WCZZMainLogicForVC(id vc) {
+    return WCZZValue(vc, @"m_mainFrameLogicController");
+}
+
+static NSArray *WCZZBuildVCRows(id vc, long long originalCount) {
+    if (originalCount <= 0) return @[];
+    id logic = WCZZMainLogicForVC(vc);
+    if (!logic) return @[];
     NSMutableArray *visible = [NSMutableArray arrayWithCapacity:(NSUInteger)originalCount];
     NSMutableArray *folded = [NSMutableArray array];
-    WCZZSetReentry(logic, YES);
+    SEL infoSel = NSSelectorFromString(@"getSessionInfoAtIndexPath:");
+    if (![logic respondsToSelector:infoSel]) return @[];
+
     for (NSInteger i = 0; i < originalCount; i++) {
         NSIndexPath *ip = [NSIndexPath indexPathForRow:i inSection:0];
         id session = nil;
-        @try { session = ((id (*)(id, SEL, id))objc_msgSend)(logic, @selector(getSessionInfoAtIndexPath:), ip); } @catch (__unused NSException *e) {}
-        if (WCZZShouldFold(session)) [folded addObject:@(i)]; else [visible addObject:@(i)];
+        @try { session = ((id (*)(id, SEL, id))objc_msgSend)(logic, infoSel, ip); }
+        @catch (__unused NSException *e) {}
+        if (WCZZShouldFold(session)) [folded addObject:@(i)];
+        else [visible addObject:@(i)];
     }
-    WCZZSetReentry(logic, NO);
-    objc_setAssociatedObject(logic, WCZZRowsKey, visible, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(logic, WCZZFoldedKey, folded, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    WCZZSetOriginalCount(logic, originalCount);
-    WCZZLog(@"logic rows rebuilt original=%lld visible=%lu folded=%lu", originalCount, (unsigned long)visible.count, (unsigned long)folded.count);
+
+    objc_setAssociatedObject(vc, WCZZVCRowsKey, visible, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(vc, WCZZVCFoldedKey, folded, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(vc, WCZZVCOriginalCountKey, @(originalCount), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    WCZZLog(@"VC rows rebuilt original=%lld visible=%lu folded=%lu", originalCount, (unsigned long)visible.count, (unsigned long)folded.count);
+    return visible;
 }
-static void WCZZEnsureRows(id logic, long long originalCount) {
-    NSArray *rows = WCZZRows(logic);
-    if (!rows || WCZZOriginalCount(logic) != originalCount) WCZZBuildRows(logic, originalCount);
+
+static NSArray *WCZZEnsureVCRows(id vc, long long originalCount) {
+    if (!WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES) || originalCount <= 0) {
+        WCZZClearVCRows(vc);
+        return nil;
+    }
+    NSArray *rows = WCZZVCRows(vc);
+    if (![rows isKindOfClass:[NSArray class]] || WCZZVCOriginalCount(vc) != originalCount) {
+        rows = WCZZBuildVCRows(vc, originalCount);
+    }
+    return rows;
 }
-static void WCZZInvalidateMainLogicCache(void) {
-    id main = WCZZFindMainController();
-    id logic = WCZZValue(main, @"m_mainFrameLogicController");
-    if (logic) WCZZClearRows(logic);
-}
-static NSIndexPath *WCZZMapVisibleToOriginal(id logic, NSIndexPath *visibleIP) {
-    NSArray *rows = WCZZRows(logic);
-    if (!rows || visibleIP.section != 0) return nil;
+
+static NSIndexPath *WCZZOriginalIPForVCRow(id vc, NSIndexPath *visibleIP) {
+    NSArray *rows = WCZZVCRows(vc);
+    if (![rows isKindOfClass:[NSArray class]] || visibleIP.section != 0) return nil;
     BOOL top = WCZZBool(WCZZGroupTopKey, YES);
     NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
     if (visibleIP.row == helperRow) return nil;
     NSInteger visibleIndex = top ? visibleIP.row - 1 : visibleIP.row;
     if (visibleIndex < 0 || visibleIndex >= (NSInteger)rows.count) return nil;
     NSInteger originalRow = [rows[(NSUInteger)visibleIndex] integerValue];
-    return [NSIndexPath indexPathForRow:originalRow inSection:visibleIP.section];
+    return [NSIndexPath indexPathForRow:originalRow inSection:0];
 }
 
-static id WCZZBuildFakeCellData(id logic) {
+static id WCZZBuildVCFakeCellData(id vc) {
     Class c = objc_getClass("FakeMainFrameCellData");
     if (!c) return nil;
-    NSArray *folded = WCZZFoldedRows(logic);
+    NSArray *folded = WCZZVCFolded(vc);
+    id logic = WCZZMainLogicForVC(vc);
     unsigned long long unread = 0;
     NSString *latestMsg = nil;
     NSString *latestTime = nil;
     double width = 0;
-    if ([folded isKindOfClass:[NSArray class]]) {
+    SEL infoSel = NSSelectorFromString(@"getSessionInfoAtIndexPath:");
+    SEL dataSel = NSSelectorFromString(@"getCellDataAtIndexPath:");
+    if ([folded isKindOfClass:[NSArray class]] && logic) {
         for (NSNumber *n in folded) {
-            NSInteger row = n.integerValue;
-            NSIndexPath *ip = [NSIndexPath indexPathForRow:row inSection:0];
-            id session = nil, data = nil;
-            WCZZSetReentry(logic, YES);
-            @try { session = ((id (*)(id, SEL, id))objc_msgSend)(logic, @selector(getSessionInfoAtIndexPath:), ip); } @catch (__unused NSException *e) {}
-            @try { data = ((id (*)(id, SEL, id))objc_msgSend)(logic, @selector(getCellDataAtIndexPath:), ip); } @catch (__unused NSException *e) {}
-            WCZZSetReentry(logic, NO);
+            NSIndexPath *ip = [NSIndexPath indexPathForRow:n.integerValue inSection:0];
+            id session = nil;
+            id data = nil;
+            @try { session = ((id (*)(id, SEL, id))objc_msgSend)(logic, infoSel, ip); } @catch (__unused NSException *e) {}
+            @try { data = ((id (*)(id, SEL, id))objc_msgSend)(logic, dataSel, ip); } @catch (__unused NSException *e) {}
             unread += [WCZZValue(session, @"m_uUnReadCount") unsignedIntValue];
-            NSString *msg = WCZZValue(data, @"textForMessageLabel");
-            NSString *time = WCZZValue(data, @"textForTimeLabel");
-            if ([msg isKindOfClass:[NSString class]] && msg.length) latestMsg = msg;
-            if ([time isKindOfClass:[NSString class]] && time.length) latestTime = time;
+            id msg = WCZZValue(data, @"textForMessageLabel");
+            id time = WCZZValue(data, @"textForTimeLabel");
+            if ([msg isKindOfClass:[NSString class]] && [(NSString *)msg length]) latestMsg = msg;
+            if ([time isKindOfClass:[NSString class]] && [(NSString *)time length]) latestTime = time;
             width = [WCZZValue(data, @"widthForNameLabel") doubleValue];
         }
     }
-    id data = [[c alloc] init];
+    id fake = [[c alloc] init];
     @try {
-        [data setValue:WCZZGroupUserName forKey:@"userName"];
-        [data setValue:@"群助手" forKey:@"textForNameLabel"];
-        [data setValue:(latestMsg.length ? [NSString stringWithFormat:@"[%llu条] %@", unread, latestMsg] : [NSString stringWithFormat:@"[%llu条]", unread]) forKey:@"textForMessageLabel"];
-        [data setValue:latestTime ?: @"" forKey:@"textForTimeLabel"];
-        [data setValue:@YES forKey:@"bNormalCell"];
-        [data setValue:@(WCZZBool(WCZZGroupTopKey, YES)) forKey:@"bTopCell"];
-        [data setValue:@(width) forKey:@"widthForNameLabel"];
+        [fake setValue:WCZZGroupUserName forKey:@"userName"];
+        [fake setValue:@"群助手" forKey:@"textForNameLabel"];
+        [fake setValue:(latestMsg.length ? [NSString stringWithFormat:@"[%llu条] %@", unread, latestMsg] : [NSString stringWithFormat:@"[%llu条]", unread]) forKey:@"textForMessageLabel"];
+        [fake setValue:latestTime ?: @"" forKey:@"textForTimeLabel"];
+        [fake setValue:@YES forKey:@"bNormalCell"];
+        [fake setValue:@(WCZZBool(WCZZGroupTopKey, YES)) forKey:@"bTopCell"];
+        [fake setValue:@(width) forKey:@"widthForNameLabel"];
     } @catch (__unused NSException *e) {}
-    return data;
+    return fake;
 }
 
-%group WCZZMainLogicHooks
-%hook MainFrameLogicController
-- (long long)getSessionCountForSection:(long long)section {
-    if (WCZZReentry(self) || section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return %orig(section);
+static void WCZZReloadMainList(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *main = WCZZFindMainController();
+        if (!main) return;
+        WCZZClearVCRows(main);
+        SEL reload = NSSelectorFromString(@"reloadSessions");
+        if ([main respondsToSelector:reload]) {
+            @try { ((void (*)(id, SEL))objc_msgSend)(main, reload); } @catch (__unused NSException *e) {}
+        } else {
+            id table = WCZZValue(main, @"m_tableView");
+            if ([table respondsToSelector:@selector(reloadData)]) [(UITableView *)table reloadData];
+        }
+        WCZZLog(@"main list reload requested");
+    });
+}
+
+%group WCZZMainVCHooks
+%hook NewMainFrameViewController
+
+- (long long)logicGetCountForSection:(long long)section {
+    if (WCZZVCReentry(self) || section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return %orig(section);
     long long original = %orig(section);
-    WCZZEnsureRows(self, original);
-    NSArray *rows = WCZZRows(self);
-    return rows ? (long long)rows.count + (rows.count < (NSUInteger)original ? 1 : 0) : original;
+    if (original <= 0) { WCZZClearVCRows(self); return original; }
+    NSArray *rows = WCZZEnsureVCRows(self, original);
+    if (![rows isKindOfClass:[NSArray class]]) return original;
+    NSArray *folded = WCZZVCFolded(self);
+    return folded.count ? (long long)rows.count + 1 : original;
 }
-- (id)getSessionInfoAtIndexPath:(id)indexPath {
-    if (WCZZReentry(self)) return %orig(indexPath);
-    NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? indexPath : nil;
+
+- (id)logicGetSessionAtIndexPath:(id)indexPath {
+    if (WCZZVCReentry(self)) return %orig(indexPath);
+    NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
     if (!ip || ip.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return %orig(indexPath);
-    long long original = 0;
-    // Obtain original count without invoking this hook recursively.
-    WCZZSetReentry(self, YES); original = ((long long (*)(id, SEL, long long))objc_msgSend)(self, @selector(getSessionCountForSection:), 0); WCZZSetReentry(self, NO);
-    WCZZEnsureRows(self, original);
-    NSIndexPath *origIP = WCZZMapVisibleToOriginal(self, ip);
-    if (!origIP) return nil;
-    return %orig(origIP);
-}
-- (id)getSessionBaseInfoAtIndexPath:(id)indexPath {
-    if (WCZZReentry(self)) return %orig(indexPath);
-    NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? indexPath : nil;
-    if (!ip || ip.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return %orig(indexPath);
-    WCZZSetReentry(self, YES); long long original = ((long long (*)(id, SEL, long long))objc_msgSend)(self, @selector(getSessionCountForSection:), 0); WCZZSetReentry(self, NO);
-    WCZZEnsureRows(self, original);
-    NSIndexPath *origIP = WCZZMapVisibleToOriginal(self, ip);
+
+    long long original = WCZZVCOriginalCount(self);
+    NSArray *rows = WCZZVCRows(self);
+    if (![rows isKindOfClass:[NSArray class]] || original < 0) {
+        return %orig(indexPath);
+    }
+    if (rows.count >= (NSUInteger)original) return %orig(indexPath);
+
+    BOOL top = WCZZBool(WCZZGroupTopKey, YES);
+    NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
+    if (ip.row == helperRow) return nil;
+    NSIndexPath *origIP = WCZZOriginalIPForVCRow(self, ip);
     if (origIP) {
         return %orig(origIP);
     }
     return nil;
 }
-- (id)getCellDataAtIndexPath:(id)indexPath {
-    if (WCZZReentry(self)) return %orig(indexPath);
-    NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? indexPath : nil;
+
+- (id)logicGetCellDataAtIndexPath:(id)indexPath {
+    if (WCZZVCReentry(self)) return %orig(indexPath);
+    NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
     if (!ip || ip.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return %orig(indexPath);
-    WCZZSetReentry(self, YES); long long original = ((long long (*)(id, SEL, long long))objc_msgSend)(self, @selector(getSessionCountForSection:), 0); WCZZSetReentry(self, NO);
-    WCZZEnsureRows(self, original);
-    NSArray *rows = WCZZRows(self);
+
+    long long original = WCZZVCOriginalCount(self);
+    NSArray *rows = WCZZVCRows(self);
+    if (![rows isKindOfClass:[NSArray class]] || original < 0) return %orig(indexPath);
+    if (rows.count >= (NSUInteger)original) return %orig(indexPath);
+
     BOOL top = WCZZBool(WCZZGroupTopKey, YES);
     NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
-    if (ip.row == helperRow && rows.count < (NSUInteger)original) return WCZZBuildFakeCellData(self);
-    NSIndexPath *origIP = WCZZMapVisibleToOriginal(self, ip);
-    if (origIP) {
-        return %orig(origIP);
-    }
+    if (ip.row == helperRow) return WCZZBuildVCFakeCellData(self);
+    NSIndexPath *origIP = WCZZOriginalIPForVCRow(self, ip);
+    if (origIP) return %orig(origIP);
     return %orig(indexPath);
 }
-- (long long)getFakeCellCount {
-    long long n = %orig;
-    return n;
-}
-- (id)getFakeCellData:(unsigned int)index {
-    return %orig(index);
-}
-- (void)onDidSelectCellAt:(id)indexPath {
-    if (WCZZReentry(self)) {
-        %orig(indexPath);
-        return;
-    }
-    NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? indexPath : nil;
-    if (ip && ip.section == 0 && WCZZEnabled() && WCZZBool(WCZZGroupEnabledKey, YES)) {
-        WCZZSetReentry(self, YES); long long original = ((long long (*)(id, SEL, long long))objc_msgSend)(self, @selector(getSessionCountForSection:), 0); WCZZSetReentry(self, NO);
-        WCZZEnsureRows(self, original);
-        NSArray *rows = WCZZRows(self);
-        if (rows.count < (NSUInteger)original) {
-            BOOL top = WCZZBool(WCZZGroupTopKey, YES);
-            NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
-            if (ip.row == helperRow) {
-                id delegate = WCZZValue(self, @"m_delegate");
-                UIViewController *base = [delegate isKindOfClass:[UIViewController class]] ? delegate : nil;
-                if (!base) base = WCZZFindMainController();
-                UINavigationController *nav = base.navigationController;
-                if (nav) {
-                    WCZZGroupHelperViewController *helper = [WCZZGroupHelperViewController new];
-                    helper.mainController = WCZZFindMainController();
-                    [nav pushViewController:helper animated:YES];
-                    WCZZLog(@"helper selected row=%ld folded=%lu", (long)ip.row, (unsigned long)rows.count);
-                }
-                return;
+
+- (void)handleSelectIndexPath:(id)indexPath tableView:(id)tableView {
+    if (WCZZVCReentry(self)) { %orig(indexPath, tableView); return; }
+    NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
+    NSArray *rows = WCZZVCRows(self);
+    long long original = WCZZVCOriginalCount(self);
+    if (ip && ip.section == 0 && [rows isKindOfClass:[NSArray class]] && original > 0 && rows.count < (NSUInteger)original && WCZZEnabled() && WCZZBool(WCZZGroupEnabledKey, YES)) {
+        BOOL top = WCZZBool(WCZZGroupTopKey, YES);
+        NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
+        if (ip.row == helperRow) {
+            UINavigationController *nav = self.navigationController;
+            if (nav) {
+                WCZZGroupHelperViewController *helper = [WCZZGroupHelperViewController new];
+                helper.mainController = self;
+                [nav pushViewController:helper animated:YES];
+                WCZZLog(@"helper selected row=%ld folded=%lu", (long)ip.row, (unsigned long)[WCZZVCFolded(self) count]);
             }
-            NSIndexPath *origIP = WCZZMapVisibleToOriginal(self, ip);
-            if (origIP) {
-                %orig(origIP);
-                return;
-            }
+            return;
         }
+        NSIndexPath *origIP = WCZZOriginalIPForVCRow(self, ip);
+        if (origIP) { %orig(origIP, tableView); return; }
     }
-    %orig(indexPath);
+    %orig(indexPath, tableView);
 }
+
+- (id)indexPathOfSessionUserName:(id)username {
+    id result = %orig(username);
+    if (!WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return result;
+    if (!WCZZIsGroupUsername(username) || WCZZIsCommonRoom(username)) return result;
+    return nil;
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig(animated);
+    WCZZLog(@"main VC appeared");
+    if (WCZZEnabled() && WCZZBool(WCZZGroupEnabledKey, YES)) {
+        dispatch_async(dispatch_get_main_queue(), ^{ WCZZReloadMainList(); });
+    }
+}
+
 - (void)onSessionRebuildEnd {
-    WCZZClearRows(self);
+    WCZZClearVCRows(self);
     %orig;
-    WCZZLog(@"main logic rebuild end");
+    if (WCZZEnabled() && WCZZBool(WCZZGroupEnabledKey, YES)) {
+        dispatch_async(dispatch_get_main_queue(), ^{ WCZZReloadMainList(); });
+    }
 }
 %end
 %end
 
 #pragma mark - Main VC navigation
-%group WCZZMainVCHooks
+%group WCZZMainOpenSessionHook
 %hook NewMainFrameViewController
 - (void)onLogicOpenSession:(id)session {
     NSString *u = WCZZUsername(session);
     if ([u isEqualToString:WCZZGroupUserName]) return;
     %orig(session);
-}
-- (void)viewDidAppear:(BOOL)animated {
-    %orig(animated);
-    WCZZLog(@"main VC appeared");
-}
-- (void)onSessionRebuildEnd {
-    %orig;
 }
 %end
 %end
@@ -598,10 +639,55 @@ static id WCZZBuildFakeCellData(id logic) {
 #pragma mark - Red envelope
 
 static const void *WCZZRedDataKey = &WCZZRedDataKey;
+static UILabel *WCZZRedLabel(id vc) {
+    id label = WCZZValue(vc, @"m_receivedInfoLable");
+    if ([label isKindOfClass:[UILabel class]]) return label;
+    Ivar iv = class_getInstanceVariable([vc class], "_m_receivedInfoLable");
+    if (iv) { id v = object_getIvar(vc, iv); if ([v isKindOfClass:[UILabel class]]) return v; }
+    iv = class_getInstanceVariable([vc class], "m_receivedInfoLable");
+    if (iv) { id v = object_getIvar(vc, iv); if ([v isKindOfClass:[UILabel class]]) return v; }
+    return nil;
+}
+static UILabel *WCZZFindRedLabelInView(UIView *view) {
+    if (!view) return nil;
+    for (UIView *sub in view.subviews) {
+        if ([sub isKindOfClass:[UILabel class]]) {
+            UILabel *l=(UILabel *)sub; NSString *t=l.text ?: @"";
+            if ([t containsString:@"领取"] || [t containsString:@"红包"] || [t containsString:@"个"]) return l;
+        }
+        UILabel *nested=WCZZFindRedLabelInView(sub); if (nested) return nested;
+    }
+    return nil;
+}
+static void WCZZScheduleRedApply(id vc, id data) {
+    if (!vc) return;
+    for (int i=0;i<8;i++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.15*i*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+            UILabel *label=WCZZRedLabel(vc);
+            if (!label && [vc isViewLoaded]) label=WCZZFindRedLabelInView(vc.view);
+            if (label && data) {
+                objc_setAssociatedObject(vc, WCZZRedDataKey, data, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                id info=WCZZValue(data,@"m_oWCRedEnvelopesDetailInfo");
+                if (info) {
+                    long long totalAmount=MAX(0LL,[WCZZValue(info,@"m_lTotalAmount") longLongValue]);
+                    long long totalNum=MAX(0LL,[WCZZValue(info,@"m_lTotalNum") longLongValue]);
+                    long long recAmount=MAX(0LL,[WCZZValue(info,@"m_lRecAmount") longLongValue]);
+                    long long recNum=MAX(0LL,[WCZZValue(info,@"m_lRecNum") longLongValue]);
+                    long long remainAmount=MAX(0LL,totalAmount-recAmount);
+                    long long remainNum=MAX(0LL,totalNum-recNum);
+                    label.text=[NSString stringWithFormat:@"总金额 %.2f 元    共 %lld 个\n已领取 %lld 个 / %.2f 元    剩余 %lld 个 / %.2f 元",totalAmount/100.0,totalNum,recNum,recAmount/100.0,remainNum,remainAmount/100.0];
+                    label.numberOfLines=2; label.textAlignment=NSTextAlignmentCenter;
+                    WCZZLog(@"red detail applied total=%lld/%lld received=%lld/%lld label=%p",totalAmount,totalNum,recAmount,recNum,label);
+                }
+            }
+        });
+    }
+}
+
 static void WCZZApplyRedDetailFromData(id vc, id data) {
     if (!WCZZEnabled() || !WCZZBool(WCZZRedDetailKey, YES) || !vc || !data) return;
     id info = WCZZValue(data, @"m_oWCRedEnvelopesDetailInfo");
-    id labelObj = WCZZValue(vc, @"m_receivedInfoLable");
+    id labelObj = WCZZRedLabel(vc);
     if (!info || ![labelObj isKindOfClass:[UILabel class]]) { WCZZLog(@"red apply missing info=%p label=%p", info, labelObj); return; }
     long long totalAmount = MAX(0LL, [WCZZValue(info, @"m_lTotalAmount") longLongValue]);
     long long totalNum = MAX(0LL, [WCZZValue(info, @"m_lTotalNum") longLongValue]);
@@ -614,10 +700,17 @@ static void WCZZApplyRedDetailFromData(id vc, id data) {
     label.numberOfLines = 2;
     label.textAlignment = NSTextAlignmentCenter;
     WCZZLog(@"red detail applied total=%lld/%lld received=%lld/%lld", totalAmount, totalNum, recAmount, recNum);
+    WCZZScheduleRedApply(vc, data);
 }
 
 %group WCZZRedHooks
 %hook WCRedEnvelopesControlLogic
+- (void)showDetailView {
+    %orig;
+    WCZZLog(@"red base showDetailView self=%p data=%p", self, WCZZValue(self,@"m_data"));
+    id data=WCZZValue(self,@"m_data");
+    if (data) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.15*NSEC_PER_SEC)),dispatch_get_main_queue(),^{ WCZZLog(@"red base detail search data=%p",data); }); }
+}
 - (id)initWithData:(id)data {
     id obj = %orig(data);
     if (obj && data) objc_setAssociatedObject(obj, WCZZRedDataKey, data, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -627,6 +720,16 @@ static void WCZZApplyRedDetailFromData(id vc, id data) {
 %end
 
 %hook WCRedEnvelopesReceiveControlLogic
+- (id)initWithData:(id)data Scene:(int)scene {
+    id obj=%orig(data,scene);
+    WCZZLog(@"red receive init scene=%d data=%p obj=%p",scene,data,obj);
+    return obj;
+}
+- (id)initWithData:(id)data {
+    id obj=%orig(data);
+    WCZZLog(@"red receive init data=%p obj=%p",data,obj);
+    return obj;
+}
 - (void)showDetailView {
     %orig;
     WCZZLog(@"red receive showDetailView");
@@ -648,7 +751,7 @@ static void WCZZApplyRedDetailFromData(id vc, id data) {
                     UIViewController *vc = stack.lastObject; [stack removeLastObject];
                     if ([vc isKindOfClass:detail]) {
                         id d = data ?: WCZZValue(self, @"m_data");
-                        if (d) { objc_setAssociatedObject(vc, WCZZRedDataKey, d, OBJC_ASSOCIATION_RETAIN_NONATOMIC); WCZZApplyRedDetailFromData(vc, d); }
+                        if (d) { objc_setAssociatedObject(vc, WCZZRedDataKey, d, OBJC_ASSOCIATION_RETAIN_NONATOMIC); WCZZApplyRedDetailFromData(vc, d); WCZZScheduleRedApply(vc, d); }
                         return;
                     }
                     if (vc.presentedViewController) [stack addObject:vc.presentedViewController];
@@ -669,7 +772,8 @@ static void WCZZApplyRedDetailFromData(id vc, id data) {
 }
 - (void)viewDidLoad {
     %orig;
-    WCZZLog(@"red detail viewDidLoad label=%p", WCZZValue(self, @"m_receivedInfoLable"));
+    WCZZLog(@"red detail viewDidLoad label=%p", WCZZRedLabel(self));
+    id d=objc_getAssociatedObject(self,WCZZRedDataKey); if(d) WCZZScheduleRedApply(self,d);
 }
 - (void)refreshViewWithData:(id)data {
     %orig(data);
@@ -677,7 +781,7 @@ static void WCZZApplyRedDetailFromData(id vc, id data) {
     if (data) {
         objc_setAssociatedObject(self, WCZZRedDataKey, data, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         dispatch_async(dispatch_get_main_queue(), ^{
-            WCZZApplyRedDetailFromData(self, data);
+            WCZZApplyRedDetailFromData(self, data); WCZZScheduleRedApply(self, data);
         });
     }
 }
@@ -686,7 +790,7 @@ static void WCZZApplyRedDetailFromData(id vc, id data) {
     id data = objc_getAssociatedObject(self, WCZZRedDataKey);
     if (data) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            WCZZApplyRedDetailFromData(self, data);
+            WCZZApplyRedDetailFromData(self, data); WCZZScheduleRedApply(self, data);
         });
     }
 }
@@ -696,7 +800,6 @@ static void WCZZApplyRedDetailFromData(id vc, id data) {
 #pragma mark - Plugin registration / delayed hook installation
 
 static BOOL WCZZRegistered = NO;
-static BOOL WCZZMainHooksStarted = NO;
 static BOOL WCZZMainVCHooksStarted = NO;
 static BOOL WCZZRedHooksStarted = NO;
 static NSInteger WCZZInstallAttempts = 0;
@@ -709,18 +812,17 @@ static void WCZZRegisterPlugin(void) {
     if (!c || ![c respondsToSelector:shared]) return;
     id mgr = ((id (*)(id, SEL))objc_msgSend)(c, shared);
     if (!mgr || ![mgr respondsToSelector:reg]) return;
-    ((void (*)(id, SEL, id, id, id))objc_msgSend)(mgr, reg, @"wczz", @"1.0-8", @"WCZZSettingsViewController");
+    ((void (*)(id, SEL, id, id, id))objc_msgSend)(mgr, reg, @"wczz", @"1.0-13", @"WCZZSettingsViewController");
     WCZZRegistered = YES;
     WCZZLog(@"plugin registration OK");
 }
 
 static void WCZZInstallHooksWhenReady(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (!WCZZMainHooksStarted && objc_getClass("MainFrameLogicController")) { %init(WCZZMainLogicHooks); WCZZMainHooksStarted = YES; WCZZLog(@"main logic hooks installed"); }
-        if (!WCZZMainVCHooksStarted && objc_getClass("NewMainFrameViewController")) { %init(WCZZMainVCHooks); WCZZMainVCHooksStarted = YES; WCZZLog(@"main VC hooks installed"); }
+        if (!WCZZMainVCHooksStarted && objc_getClass("NewMainFrameViewController")) { %init(WCZZMainVCHooks); %init(WCZZMainOpenSessionHook); WCZZMainVCHooksStarted = YES; WCZZLog(@"main VC hooks installed"); WCZZReloadMainList(); }
         if (!WCZZRedHooksStarted && objc_getClass("WCRedEnvelopesControlLogic") && objc_getClass("WCRedEnvelopesReceiveControlLogic") && objc_getClass("WCRedEnvelopesRedEnvelopesDetailViewController")) { %init(WCZZRedHooks); WCZZRedHooksStarted = YES; WCZZLog(@"red hooks installed"); }
         WCZZRegisterPlugin();
-        if ((!WCZZMainHooksStarted || !WCZZMainVCHooksStarted || !WCZZRedHooksStarted || !WCZZRegistered) && WCZZInstallAttempts++ < 60) {
+        if ((!WCZZMainVCHooksStarted || !WCZZRedHooksStarted || !WCZZRegistered) && WCZZInstallAttempts++ < 60) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.75 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCZZInstallHooksWhenReady(); });
         }
     });
@@ -738,7 +840,7 @@ static void WCZZInstallHooksWhenReady(void) {
         if ([d objectForKey:WCZZDebugEnabledKey] == nil) [d setBool:NO forKey:WCZZDebugEnabledKey];
         if ([d objectForKey:WCZZDebugLogsKey] == nil) [d setObject:@[] forKey:WCZZDebugLogsKey];
         [d synchronize];
-        WCZZLog(@"v1.0-8 constructor");
+        WCZZLog(@"v1.0-13 constructor");
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCZZInstallHooksWhenReady(); });
     }
 }
