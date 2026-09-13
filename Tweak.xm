@@ -6,7 +6,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 
-// wczz 1.0-30
+// wczz 1.0-32
 // Independent implementation for WeChat 8.0.75.
 // The main-list implementation works at MainFrameLogicController's logical
 // session boundary instead of fighting UITableView or WeChat's native fold UI.
@@ -1083,20 +1083,51 @@ static void WCZZReloadMainList(void) {
     BOOL top = WCZZBool(WCZZGroupTopKey, YES);
     NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
     if (indexPath.row == helperRow) {
-        // Let WeChat build its normal session cell. Our logicGetCellDataAtIndexPath:
-        // hook supplies the synthetic 群助手 data for this row.
+        // Do NOT ask WeChat to render this row. The helper username is synthetic
+        // and WeChat cannot resolve it through its contact/session pipeline, so
+        // the native session cell can come back visually empty. Build an
+        // independent UITableViewCell instead.
         WCZZLog(@"table helper cell row=%ld", (long)indexPath.row);
-        UITableViewCell *cell = %orig(tableView, indexPath);
-        if (!cell) return cell;
 
-        // WeChat 8.0.75 may consume the tap through an internal selection chain
-        // without reaching either of our didSelect hooks. Attach a dedicated
-        // recognizer to the synthetic helper cell so the helper page remains
-        // directly tappable. The tag also prevents duplicate recognizers when
-        // UITableView reuses the cell.
+        static NSString *helperReuse = @"wczz.helper.cell";
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:helperReuse];
+        if (!cell) {
+            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                          reuseIdentifier:helperReuse];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            cell.textLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightMedium];
+            cell.detailTextLabel.font = [UIFont systemFontOfSize:13.0];
+        }
+
+        cell.textLabel.text = @"群助手";
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个群 · %llu 条未读",
+                                      (unsigned long)folded.count,
+                                      (unsigned long long)0];
+
+        // Calculate the unread total from the real session list. The folded
+        // array contains original row numbers and is deliberately not sorted.
+        // This is only one helper-cell render, so it does not add per-row work
+        // to the normal session list.
+        unsigned long long unreadTotal = 0;
+        NSArray *serviceSessions = WCZZSessionList();
+        if ([serviceSessions isKindOfClass:[NSArray class]]) {
+            for (NSNumber *number in folded) {
+                NSInteger originalRow = [number integerValue];
+                id session = (originalRow >= 0 && originalRow < (NSInteger)serviceSessions.count)
+                    ? serviceSessions[(NSUInteger)originalRow] : nil;
+                unreadTotal += (unsigned long long)[WCZZValue(session, @"m_uUnReadCount") unsignedIntValue];
+            }
+        }
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个群 · %llu 条未读",
+                                      (unsigned long)folded.count,
+                                      unreadTotal];
+
+        // Keep the direct tap fallback. Use the recognizer name rather than
+        // UIGestureRecognizer.tag (tag belongs to UIView, not UIGestureRecognizer).
         NSMutableArray *stale = [NSMutableArray array];
         for (UIGestureRecognizer *gesture in cell.gestureRecognizers) {
-            if ([gesture isKindOfClass:[UITapGestureRecognizer class]] && gesture.tag == 0x575A02) {
+            if ([gesture isKindOfClass:[UITapGestureRecognizer class]] &&
+                [gesture.name isEqualToString:@"wczz.grouphelper.tap"]) {
                 [stale addObject:gesture];
             }
         }
@@ -1106,7 +1137,7 @@ static void WCZZReloadMainList(void) {
 
         UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self
                                                                                  action:@selector(wczzHelperCellTapped)];
-        tap.tag = 0x575A02;
+        tap.name = @"wczz.grouphelper.tap";
         tap.cancelsTouchesInView = NO;
         [cell addGestureRecognizer:tap];
         cell.userInteractionEnabled = YES;
@@ -1432,7 +1463,7 @@ static void WCZZRegisterPlugin(void) {
     if (!c || ![c respondsToSelector:shared]) return;
     id mgr = ((id (*)(id, SEL))objc_msgSend)(c, shared);
     if (!mgr || ![mgr respondsToSelector:reg]) return;
-    ((void (*)(id, SEL, id, id, id))objc_msgSend)(mgr, reg, @"wczz", @"1.0-30", @"WCZZSettingsViewController");
+    ((void (*)(id, SEL, id, id, id))objc_msgSend)(mgr, reg, @"wczz", @"1.0-32", @"WCZZSettingsViewController");
     WCZZRegistered = YES;
     WCZZLog(@"plugin registration OK");
 }
@@ -1481,7 +1512,7 @@ static void WCZZInstallHooksWhenReady(void) {
                                                   usingBlock:^(__unused NSNotification *note) {
         WCZZFlushDebugLogs();
     }];
-        WCZZLog(@"v1.0-30 constructor");
+        WCZZLog(@"v1.0-32 constructor");
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCZZInstallHooksWhenReady(); });
     }
 }
