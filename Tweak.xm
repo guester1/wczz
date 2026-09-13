@@ -531,9 +531,14 @@ static id WCZZBuildFakeCellData(id logic) {
     long long n = %orig;
     return n;
 }
-- (id)getFakeCellData:(unsigned int)index { return %orig(index); }
+- (id)getFakeCellData:(unsigned int)index {
+    return %orig(index);
+}
 - (void)onDidSelectCellAt:(id)indexPath {
-    if (WCZZReentry(self)) { %orig(indexPath); return; }
+    if (WCZZReentry(self)) {
+        %orig(indexPath);
+        return;
+    }
     NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? indexPath : nil;
     if (ip && ip.section == 0 && WCZZEnabled() && WCZZBool(WCZZGroupEnabledKey, YES)) {
         WCZZSetReentry(self, YES); long long original = ((long long (*)(id, SEL, long long))objc_msgSend)(self, @selector(getSessionCountForSection:), 0); WCZZSetReentry(self, NO);
@@ -556,12 +561,19 @@ static id WCZZBuildFakeCellData(id logic) {
                 return;
             }
             NSIndexPath *origIP = WCZZMapVisibleToOriginal(self, ip);
-            if (origIP) { %orig(origIP); return; }
+            if (origIP) {
+                %orig(origIP);
+                return;
+            }
         }
     }
     %orig(indexPath);
 }
-- (void)onSessionRebuildEnd { WCZZClearRows(self); %orig; WCZZLog(@"main logic rebuild end"); }
+- (void)onSessionRebuildEnd {
+    WCZZClearRows(self);
+    %orig;
+    WCZZLog(@"main logic rebuild end");
+}
 %end
 %end
 
@@ -573,8 +585,13 @@ static id WCZZBuildFakeCellData(id logic) {
     if ([u isEqualToString:WCZZGroupUserName]) return;
     %orig(session);
 }
-- (void)viewDidAppear:(BOOL)animated { %orig(animated); WCZZLog(@"main VC appeared"); }
-- (void)onSessionRebuildEnd { %orig; }
+- (void)viewDidAppear:(BOOL)animated {
+    %orig(animated);
+    WCZZLog(@"main VC appeared");
+}
+- (void)onSessionRebuildEnd {
+    %orig;
+}
 %end
 %end
 
@@ -645,10 +662,34 @@ static void WCZZApplyRedDetailFromData(id vc, id data) {
 %end
 
 %hook WCRedEnvelopesRedEnvelopesDetailViewController
-- (id)init { id obj = %orig; WCZZLog(@"red detail init vc=%p", obj); return obj; }
-- (void)viewDidLoad { %orig; WCZZLog(@"red detail viewDidLoad label=%p", WCZZValue(self, @"m_receivedInfoLable")); }
-- (void)refreshViewWithData:(id)data { %orig(data); WCZZLog(@"red refreshViewWithData data=%p", data); if (data) { objc_setAssociatedObject(self, WCZZRedDataKey, data, OBJC_ASSOCIATION_RETAIN_NONATOMIC); dispatch_async(dispatch_get_main_queue(), ^{ WCZZApplyRedDetailFromData(self, data); }); } }
-- (void)viewDidAppear:(BOOL)animated { %orig(animated); id data=objc_getAssociatedObject(self,WCZZRedDataKey); if(data) dispatch_async(dispatch_get_main_queue(), ^{ WCZZApplyRedDetailFromData(self,data); }); }
+- (id)init {
+    id obj = %orig;
+    WCZZLog(@"red detail init vc=%p", obj);
+    return obj;
+}
+- (void)viewDidLoad {
+    %orig;
+    WCZZLog(@"red detail viewDidLoad label=%p", WCZZValue(self, @"m_receivedInfoLable"));
+}
+- (void)refreshViewWithData:(id)data {
+    %orig(data);
+    WCZZLog(@"red refreshViewWithData data=%p", data);
+    if (data) {
+        objc_setAssociatedObject(self, WCZZRedDataKey, data, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WCZZApplyRedDetailFromData(self, data);
+        });
+    }
+}
+- (void)viewDidAppear:(BOOL)animated {
+    %orig(animated);
+    id data = objc_getAssociatedObject(self, WCZZRedDataKey);
+    if (data) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WCZZApplyRedDetailFromData(self, data);
+        });
+    }
+}
 %end
 %end
 
