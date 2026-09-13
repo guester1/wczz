@@ -4,23 +4,31 @@
 @interface NewMainFrameViewController : UIViewController
 - (void)onLogicOpenSession:(id)session;
 - (void)onSessionRebuildEnd;
-- (void)reloadSessions;
 - (void)viewDidAppear:(BOOL)animated;
-@end
-
-@interface MMNewSessionMgr : NSObject
-- (BOOL)shouldFoldSession:(id)session;
-- (void)foldSessionByNames:(id)names;
 @end
 
 @interface MainFrameLogicController : NSObject
 - (void)onSessionRebuildEnd;
-- (id)getFakeCellData:(unsigned int)index;
-- (void)foldSessionUsernames:(id)names animate:(BOOL)animated;
-- (void)unfoldAllSessions;
+- (id)getSessionInfoAtIndexPath:(id)indexPath;
+- (id)getSessionBaseInfoAtIndexPath:(id)indexPath;
+- (unsigned int)getVisibleSessionCount;
+- (long long)getSessionCountForSection:(long long)section;
+- (id)getCellDataAtIndexPath:(id)indexPath;
+- (id)getCellDataByUsrName:(id)username;
+- (void)onDidSelectCellAt:(id)indexPath;
+@end
+
+@interface WCRedEnvelopesControlLogic : NSObject
+- (id)initWithData:(id)data;
+@end
+
+@interface WCRedEnvelopesReceiveControlLogic : WCRedEnvelopesControlLogic
+- (void)showDetailView;
 @end
 
 @interface WCRedEnvelopesRedEnvelopesDetailViewController : UIViewController
+- (id)init;
 - (void)refreshViewWithData:(id)data;
 - (void)viewDidAppear:(BOOL)animated;
+- (void)viewDidLoad;
 @end
