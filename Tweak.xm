@@ -287,8 +287,11 @@ static id WCZZSessionCellDataForUsername(NSString *username) {
     if (!WCZZIsGroupUsername(u)) return;
     if ([self.selected containsObject:u]) [self.selected removeObject:u]; else [self.selected addObject:u];
     WCZZSetCommonRooms(self.selected.allObjects);
+    // The main-list mapping is cached by MainFrameLogicController.  Invalidate it
+    // before reloading so a newly selected common group immediately returns to the
+    // normal WeChat session list (and vice versa).
+    WCZZInvalidateMainLogicCache();
     [tv reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationNone];
-    // One reload only; the logic cache is invalidated by the main controller helper below.
     dispatch_async(dispatch_get_main_queue(), ^{
         UIViewController *main = WCZZFindMainController();
         id table = WCZZValue(main, @"m_tableView");
@@ -503,7 +506,10 @@ static id WCZZBuildFakeCellData(id logic) {
     WCZZSetReentry(self, YES); long long original = ((long long (*)(id, SEL, long long))objc_msgSend)(self, @selector(getSessionCountForSection:), 0); WCZZSetReentry(self, NO);
     WCZZEnsureRows(self, original);
     NSIndexPath *origIP = WCZZMapVisibleToOriginal(self, ip);
-    return origIP ? %orig(origIP) : nil;
+    if (origIP) {
+        return %orig(origIP);
+    }
+    return nil;
 }
 - (id)getCellDataAtIndexPath:(id)indexPath {
     if (WCZZReentry(self)) return %orig(indexPath);
@@ -516,7 +522,10 @@ static id WCZZBuildFakeCellData(id logic) {
     NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
     if (ip.row == helperRow && rows.count < (NSUInteger)original) return WCZZBuildFakeCellData(self);
     NSIndexPath *origIP = WCZZMapVisibleToOriginal(self, ip);
-    return origIP ? %orig(origIP) : %orig(indexPath);
+    if (origIP) {
+        return %orig(origIP);
+    }
+    return %orig(indexPath);
 }
 - (long long)getFakeCellCount {
     long long n = %orig;

@@ -1,4 +1,4 @@
-# wczz 1.0-8
+# wczz 1.0-9
 
 Independent WeChat 8.0.75 tweak.
 
