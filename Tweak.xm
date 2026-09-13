@@ -5,7 +5,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 
-// wczz 1.0-6
+// wczz 1.0-7
 // Independent implementation. Runtime dependency: WeChat only.
 
 static NSString * const WCZZPluginEnabledKey = @"wczz.plugin.enabled";
@@ -591,6 +591,37 @@ static void WCZZOpenHelper(id vc) {
     [nav pushViewController:helper animated:YES];
 }
 
+static void WCZZUpdateNativeFoldView(id vc, NSUInteger count) {
+    if (!vc) return;
+    id foldView = WCZZValue(vc, @"topSessionFoldView");
+    if (!foldView) foldView = WCZZValue(vc, @"_topSessionFoldView");
+    if (!foldView) {
+        WCZZLog(@"native fold view not found");
+        return;
+    }
+
+    SEL setSel = NSSelectorFromString(@"setIsFolding:foldCount:");
+    if ([foldView respondsToSelector:setSel]) {
+        @try {
+            ((void (*)(id, SEL, BOOL, long long))objc_msgSend)(foldView, setSel, count > 0, (long long)count);
+        } @catch (NSException *e) {
+            WCZZLog(@"native fold view set failed: %@", e);
+        }
+    }
+
+    id banner = WCZZValue(foldView, @"bannerBtn");
+    if (!banner) banner = WCZZValue(foldView, @"_bannerBtn");
+    SEL titleSel = NSSelectorFromString(@"setTitleText:");
+    if (banner && [banner respondsToSelector:titleSel]) {
+        @try {
+            ((void (*)(id, SEL, id))objc_msgSend)(banner, titleSel, @"群助手");
+        } @catch (NSException *e) {
+            WCZZLog(@"native fold banner title failed: %@", e);
+        }
+    }
+    WCZZLog(@"native fold view updated count=%lu", (unsigned long)count);
+}
+
 static void WCZZApplyNativeFoldingNow(void) {
     if (WCZZApplyingNativeFold) return;
     WCZZApplyingNativeFold = YES;
@@ -607,6 +638,7 @@ static void WCZZApplyNativeFoldingNow(void) {
         SEL foldSel = NSSelectorFromString(@"foldSessionUsernames:animate:");
         NSArray *names = WCZZFoldableGroupNames();
         id mgr = WCZZSessionManager();
+        WCZZUpdateNativeFoldView(WCZZFindMainController(), names.count);
 
         if (!WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) {
             if (mgr && [mgr respondsToSelector:unfoldAllSel]) {
@@ -688,66 +720,8 @@ static void WCZZScheduleNativeFolding(void) {
 
 %hook MainFrameLogicController
 
-+ (id)getFakeCellDataFromCellData:(id)arg1 {
-    id data = %orig(arg1);
-    WCZZLog(@"+getFakeCellDataFromCellData called data=%p", data);
-    if (!data || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return data;
-    NSArray *names = WCZZFoldableGroupNames();
-    if (!names.count) return data;
-    @try {
-        [data setValue:WCZZGroupUserName forKey:@"userName"];
-        [data setValue:@"群助手" forKey:@"textForNameLabel"];
-        unsigned long long unread = 0;
-        for (id session in WCZZSessionList()) {
-            NSString *u = WCZZUsername(session);
-            if (WCZZIsGroupUsername(u) && !WCZZIsCommonRoom(u)) {
-                unread += (unsigned long long)[WCZZValue(session, @"m_uUnReadCount") unsignedIntValue];
-            }
-        }
-        NSString *summary = [NSString stringWithFormat:@"%lu 个群", (unsigned long)names.count];
-        if (unread) summary = [NSString stringWithFormat:@"%@ · %llu 条未读", summary, unread];
-        [data setValue:summary forKey:@"textForMessageLabel"];
-        [data setValue:@"" forKey:@"textForTimeLabel"];
-        [data setValue:@YES forKey:@"bNormalCell"];
-        [data setValue:@(WCZZBool(WCZZGroupTopKey, YES)) forKey:@"bTopCell"];
-        WCZZLog(@"fake helper customized: %lu groups", (unsigned long)names.count);
-    } @catch (NSException *e) {
-        WCZZLog(@"fake helper exception: %@", e);
-    }
-    return data;
-}
 
 - (void)onDidSelectCellAt:(id)indexPath {
-    NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
-    WCZZLog(@"MainLogic onDidSelectCellAt=%@", ip);
-    if (ip && ip.section == 0 && WCZZEnabled() && WCZZBool(WCZZGroupEnabledKey, YES)) {
-        SEL fakeCountSel = NSSelectorFromString(@"getFakeCellCount");
-        SEL fakeDataSel = NSSelectorFromString(@"getFakeCellData:");
-        if ([self respondsToSelector:fakeCountSel] && [self respondsToSelector:fakeDataSel]) {
-            long long count = ((long long (*)(id, SEL))objc_msgSend)(self, fakeCountSel);
-            for (unsigned int i = 0; i < (unsigned int)MAX(0LL, count); i++) {
-                id data = ((id (*)(id, SEL, unsigned int))objc_msgSend)(self, fakeDataSel, i);
-                NSString *u = WCZZValue(data, @"userName");
-                BOOL isHelper = [u isKindOfClass:[NSString class]] && [u isEqualToString:WCZZGroupUserName];
-                BOOL top = [WCZZValue(data, @"bTopCell") boolValue];
-                if (isHelper && ((top && ip.row == 0) || (!top && ip.row == (NSInteger)((long long (*)(id, SEL, long long))objc_msgSend)(self, NSSelectorFromString(@"getSessionCountForSection:"), 0) - 1))) {
-                    id delegate = WCZZValue(self, @"m_delegate");
-                    UIViewController *base = [delegate isKindOfClass:[UIViewController class]] ? (UIViewController *)delegate : nil;
-                    UINavigationController *nav = base.navigationController;
-                    if (!nav && [base isKindOfClass:[UINavigationController class]]) nav = (UINavigationController *)base;
-                    if (nav) {
-                        WCZZGroupHelperViewController *vc = [WCZZGroupHelperViewController new];
-                        vc.mainController = base;
-                        [nav pushViewController:vc animated:YES];
-                        WCZZLog(@"helper selected -> opened group helper");
-                    } else {
-                        WCZZLog(@"helper selected but navigation controller missing");
-                    }
-                    return;
-                }
-            }
-        }
-    }
     %orig(indexPath);
 }
 
@@ -759,25 +733,6 @@ static void WCZZScheduleNativeFolding(void) {
 
 - (id)getFakeCellData:(unsigned int)index {
     id data = %orig(index);
-    WCZZLog(@"getFakeCellData index=%u data=%p", index, data);
-    if (!data || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return data;
-    NSArray *names = WCZZFoldableGroupNames();
-    if (!names.count) return data;
-    @try {
-        [data setValue:WCZZGroupUserName forKey:@"userName"];
-        [data setValue:@"群助手" forKey:@"textForNameLabel"];
-        unsigned long long unread = 0;
-        for (id session in WCZZSessionList()) {
-            NSString *u = WCZZUsername(session);
-            if (WCZZIsGroupUsername(u) && !WCZZIsCommonRoom(u)) unread += (unsigned long long)[WCZZValue(session, @"m_uUnReadCount") unsignedIntValue];
-        }
-        NSString *summary = [NSString stringWithFormat:@"%lu 个群", (unsigned long)names.count];
-        if (unread) summary = [NSString stringWithFormat:@"%@ · %llu 条未读", summary, unread];
-        [data setValue:summary forKey:@"textForMessageLabel"];
-        [data setValue:@"" forKey:@"textForTimeLabel"];
-        [data setValue:@YES forKey:@"bNormalCell"];
-        [data setValue:@(WCZZBool(WCZZGroupTopKey, YES)) forKey:@"bTopCell"];
-    } @catch (NSException *e) { WCZZLog(@"fake cell exception=%@", e); }
     return data;
 }
 
@@ -789,6 +744,19 @@ static void WCZZScheduleNativeFolding(void) {
     %orig(animated);
     WCZZLog(@"NewMainFrameViewController viewDidAppear");
     WCZZScheduleNativeFolding();
+}
+
+- (void)onSelectAtSectionFoldView {
+    WCZZLog(@"onSelectAtSectionFoldView fired");
+    if (WCZZEnabled() && WCZZBool(WCZZGroupEnabledKey, YES)) {
+        NSArray *groups = WCZZFoldableGroupNames();
+        if (groups.count > 0) {
+            WCZZLog(@"opening group helper from native fold view count=%lu", (unsigned long)groups.count);
+            WCZZOpenHelper(self);
+            return;
+        }
+    }
+    %orig;
 }
 
 - (void)onSessionRebuildEnd {
@@ -817,7 +785,7 @@ static void WCZZScheduleNativeFolding(void) {
     if (WCZZEnabled() && WCZZBool(WCZZGroupEnabledKey, YES)) {
         id logic = WCZZValue(self, @"m_mainFrameLogicController");
         SEL dataSel = NSSelectorFromString(@"logicGetCellDataAtIndexPath:");
-        if (logic && [self respondsToSelector:dataSel]) {
+        if (logic && [logic respondsToSelector:dataSel]) {
             id data = ((id (*)(id, SEL, id))objc_msgSend)(self, dataSel, indexPath);
             NSString *u = WCZZValue(data, @"userName");
             if ([u isKindOfClass:[NSString class]] && [u isEqualToString:WCZZGroupUserName]) {
@@ -867,6 +835,17 @@ static void WCZZApplyRedDetailFromData(id vc, id data) {
 
 %hook WCRedEnvelopesRedEnvelopesDetailViewController
 
+- (id)init {
+    id obj = %orig;
+    WCZZLog(@"red detail init vc=%p", obj);
+    return obj;
+}
+
+- (void)viewDidLoad {
+    %orig;
+    WCZZLog(@"red detail viewDidLoad vc=%p label=%p", self, WCZZValue(self, @"m_receivedInfoLable"));
+}
+
 - (void)refreshViewWithData:(id)data {
     %orig(data);
     WCZZLog(@"red refreshViewWithData data=%p", data);
@@ -913,7 +892,7 @@ static void WCZZRegisterPlugin(void) {
         mgr,
         registerSel,
         @"wczz",
-        @"1.0-5",
+        @"1.0-7",
         @"WCZZSettingsViewController"
     );
 
@@ -954,7 +933,7 @@ static void WCZZRetryRegisterPlugin(void) {
         if ([d objectForKey:WCZZDebugLogsKey] == nil) [d setObject:@[] forKey:WCZZDebugLogsKey];
         [d synchronize];
 
-        WCZZLog(@"v28.2 constructor loaded; debug=%@", WCZZDebugEnabled() ? @"ON" : @"OFF");
+        WCZZLog(@"v28.3 constructor loaded; debug=%@", WCZZDebugEnabled() ? @"ON" : @"OFF");
 
         Class mainVC = objc_getClass("NewMainFrameViewController");
         Class redVC = objc_getClass("WCRedEnvelopesRedEnvelopesDetailViewController");
