@@ -650,59 +650,74 @@ static NSIndexPath *WCZZOriginalIPForLogicRow(id obj, NSIndexPath *visibleIP) {
 }
 
 static id WCZZBuildHelperCellData(id obj) {
-    Class c = objc_getClass("FakeMainFrameCellData");
-    if (!c) {
-        WCZZLog(@"helper cell data failed: FakeMainFrameCellData missing");
-        return nil;
-    }
+    NSArray *folded = WCZZLogicFolded(obj);
+    if (![folded isKindOfClass:[NSArray class]] || folded.count == 0) return nil;
 
-    NSArray *foldedRows = WCZZLogicFolded(obj);
+    id templateData = nil;
     unsigned long long unreadTotal = 0;
     NSString *latestMessage = nil;
     NSString *latestTime = nil;
-    double latestWidth = 0.0;
 
-    if ([foldedRows isKindOfClass:[NSArray class]]) {
-        for (NSNumber *n in foldedRows) {
-            NSIndexPath *ip = [NSIndexPath indexPathForRow:n.integerValue inSection:0];
-            id session = nil;
-            id data = nil;
+    for (NSNumber *n in folded) {
+        NSIndexPath *ip = [NSIndexPath indexPathForRow:n.integerValue inSection:0];
+        WCZZSetLogicReentry(obj, YES);
+        id session = nil;
+        id data = nil;
+        @try { session = [(MainFrameLogicController *)obj getSessionInfoAtIndexPath:ip]; } @catch (__unused NSException *e) {}
+        @try { data = [(MainFrameLogicController *)obj getCellDataAtIndexPath:ip]; } @catch (__unused NSException *e) {}
+        WCZZSetLogicReentry(obj, NO);
 
-            WCZZSetLogicReentry(obj, YES);
-            @try {
-                session = [(MainFrameLogicController *)obj getSessionInfoAtIndexPath:ip];
-            } @catch (__unused NSException *e) {}
-            @try {
-                data = [(MainFrameLogicController *)obj getCellDataAtIndexPath:ip];
-            } @catch (__unused NSException *e) {}
-            WCZZSetLogicReentry(obj, NO);
-
-            unreadTotal += (unsigned long long)[WCZZValue(session, @"m_uUnReadCount") unsignedIntValue];
-            if (data) {
-                id msg = WCZZValue(data, @"textForMessageLabel");
-                id time = WCZZValue(data, @"textForTimeLabel");
-                if (!latestMessage.length && [msg isKindOfClass:[NSString class]] && [(NSString *)msg length]) {
-                    latestMessage = msg;
-                    latestWidth = [WCZZValue(data, @"widthForNameLabel") doubleValue];
-                }
-                if (!latestTime.length && [time isKindOfClass:[NSString class]] && [(NSString *)time length]) latestTime = time;
-            }
+        unreadTotal += (unsigned long long)[WCZZValue(session, @"m_uUnReadCount") unsignedIntValue];
+        if (!templateData && data) templateData = data;
+        if (!latestMessage.length) {
+            id m = WCZZValue(data, @"textForMessageLabel");
+            if ([m isKindOfClass:[NSString class]] && [m length]) latestMessage = m;
+        }
+        if (!latestTime.length) {
+            id t = WCZZValue(data, @"textForTimeLabel");
+            if ([t isKindOfClass:[NSString class]] && [t length]) latestTime = t;
         }
     }
+
+    if (!templateData) {
+        WCZZLog(@"helper data: no template available");
+        return nil;
+    }
+
+    static BOOL WCZZDumpedData = NO;
+    if (!WCZZDumpedData) {
+        WCZZDumpedData = YES;
+        unsigned int ivarCount = 0;
+        Ivar *ivars = class_copyIvarList([templateData class], &ivarCount);
+        for (unsigned int i = 0; i < ivarCount; i++) {
+            const char *name = ivar_getName(ivars[i]);
+            if (name) {
+                id val = nil;
+                @try { val = [templateData valueForKey:@(name)]; } @catch (__unused NSException *e) {}
+                WCZZLog(@"data ivar: %s = %@", name, val);
+            }
+        }
+        if (ivars) free(ivars);
+    }
+
+    id data = nil;
+    @try {
+        if ([templateData respondsToSelector:@selector(copyWithZone:)]) data = [templateData copy];
+    } @catch (__unused NSException *e) {}
+    if (!data) data = templateData;
 
     NSString *message = latestMessage.length
         ? [NSString stringWithFormat:@"[%llu条] %@", unreadTotal, latestMessage]
         : [NSString stringWithFormat:@"[%llu条]", unreadTotal];
 
-    id data = [[c alloc] init];
     @try {
         [data setValue:WCZZGroupUserName forKey:@"userName"];
         [data setValue:@"群助手" forKey:@"textForNameLabel"];
         [data setValue:message forKey:@"textForMessageLabel"];
         [data setValue:(latestTime ?: @"") forKey:@"textForTimeLabel"];
-        [data setValue:@YES forKey:@"bNormalCell"];
-        [data setValue:@(WCZZBool(WCZZGroupTopKey, YES)) forKey:@"bTopCell"];
-        [data setValue:@(latestWidth) forKey:@"widthForNameLabel"];
+        [data setValue:@(unreadTotal) forKey:@"m_uUnReadCount"];
+        [data setValue:@(unreadTotal) forKey:@"unReadCount"];
+        [data setValue:@(unreadTotal) forKey:@"unreadCount"];
     } @catch (__unused NSException *e) {}
     return data;
 }
@@ -1083,64 +1098,34 @@ static void WCZZReloadMainList(void) {
     BOOL top = WCZZBool(WCZZGroupTopKey, YES);
     NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
     if (indexPath.row == helperRow) {
-        // Do NOT ask WeChat to render this row. The helper username is synthetic
-        // and WeChat cannot resolve it through its contact/session pipeline, so
-        // the native session cell can come back visually empty. Build an
-        // independent UITableViewCell instead.
         WCZZLog(@"table helper cell row=%ld", (long)indexPath.row);
 
-        static NSString *helperReuse = @"wczz.helper.cell";
+        Class cellClass = objc_getClass("MMBaseSessionTableViewCell");
+        Class lpClass = objc_getClass("SessionCellLayoutParam");
+        if (!cellClass || !lpClass) {
+            return [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        }
+
+        static NSString *helperReuse = @"wczz.helper.native";
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:helperReuse];
         if (!cell) {
-            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                          reuseIdentifier:helperReuse];
-            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-            cell.textLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightMedium];
-            cell.detailTextLabel.font = [UIFont systemFontOfSize:13.0];
-        }
-
-        cell.textLabel.text = @"群助手";
-        cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个群 · %llu 条未读",
-                                      (unsigned long)folded.count,
-                                      (unsigned long long)0];
-
-        // Calculate the unread total from the real session list. The folded
-        // array contains original row numbers and is deliberately not sorted.
-        // This is only one helper-cell render, so it does not add per-row work
-        // to the normal session list.
-        unsigned long long unreadTotal = 0;
-        NSArray *serviceSessions = WCZZSessionList();
-        if ([serviceSessions isKindOfClass:[NSArray class]]) {
-            for (NSNumber *number in folded) {
-                NSInteger originalRow = [number integerValue];
-                id session = (originalRow >= 0 && originalRow < (NSInteger)serviceSessions.count)
-                    ? serviceSessions[(NSUInteger)originalRow] : nil;
-                unreadTotal += (unsigned long long)[WCZZValue(session, @"m_uUnReadCount") unsignedIntValue];
+            SEL defaultLP = NSSelectorFromString(@"defaultSessionCellLayoutParam");
+            id lp = [lpClass respondsToSelector:defaultLP]
+                ? ((id (*)(id, SEL))objc_msgSend)(lpClass, defaultLP) : nil;
+            SEL initSel = NSSelectorFromString(@"initWithLayoutParam:reuseIdentifier:");
+            if (lp && [cellClass instancesRespondToSelector:initSel]) {
+                cell = ((id (*)(id, SEL, id, id))objc_msgSend)([cellClass alloc], initSel, lp, helperReuse);
             }
         }
-        cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu 个群 · %llu 条未读",
-                                      (unsigned long)folded.count,
-                                      unreadTotal];
+        if (!cell) return [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
 
-        // Keep the direct tap fallback. Use the recognizer name rather than
-        // UIGestureRecognizer.tag (tag belongs to UIView, not UIGestureRecognizer).
-        NSMutableArray *stale = [NSMutableArray array];
-        for (UIGestureRecognizer *gesture in cell.gestureRecognizers) {
-            if ([gesture isKindOfClass:[UITapGestureRecognizer class]] &&
-                [gesture.name isEqualToString:@"wczz.grouphelper.tap"]) {
-                [stale addObject:gesture];
+        id data = WCZZBuildHelperCellData(logic);
+        if (data) {
+            SEL updateSel = NSSelectorFromString(@"updateWithSessionCellData:");
+            if ([cell respondsToSelector:updateSel]) {
+                @try { ((void (*)(id, SEL, id))objc_msgSend)(cell, updateSel, data); } @catch (__unused NSException *e) {}
             }
         }
-        for (UIGestureRecognizer *gesture in stale) {
-            [cell removeGestureRecognizer:gesture];
-        }
-
-        UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self
-                                                                                 action:@selector(wczzHelperCellTapped)];
-        tap.name = @"wczz.grouphelper.tap";
-        tap.cancelsTouchesInView = NO;
-        [cell addGestureRecognizer:tap];
-        cell.userInteractionEnabled = YES;
         return cell;
     }
 
@@ -1185,16 +1170,10 @@ static void WCZZReloadMainList(void) {
     BOOL top = WCZZBool(WCZZGroupTopKey, YES);
     NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
     if (indexPath.row == helperRow) {
-        // Prefer WeChat's normal selection chain. If 8.0.75 does not reach
-        // MainFrameLogicController -onDidSelectCellAt:, use a delayed fallback.
-        UIViewController *base = self;
-        %orig(tableView, indexPath);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            UIViewController *current = WCZZFindMainController();
-            if (!current) current = base;
-            WCZZPushGroupHelper(current);
-        });
+        WCZZLog(@"didSelect helper row=%ld", (long)indexPath.row);
+        UIViewController *base = WCZZFindMainController();
+        if (!base) base = self;
+        WCZZPushGroupHelper(base);
         return;
     }
 
