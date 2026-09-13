@@ -688,7 +688,7 @@ static void WCZZScheduleRedApply(id vc, id data) {
     for (int i=0;i<8;i++) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.15*i*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
             UILabel *label=WCZZRedLabel(vc);
-            if (!label && [vc isViewLoaded]) label=WCZZFindRedLabelInView(vc.view);
+            if (!label && [vc isViewLoaded]) label=WCZZFindRedLabelInView([(UIViewController *)vc view]);
             if (label && data) {
                 objc_setAssociatedObject(vc, WCZZRedDataKey, data, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 id info=WCZZValue(data,@"m_oWCRedEnvelopesDetailInfo");
