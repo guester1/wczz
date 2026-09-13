@@ -527,7 +527,9 @@ static void WCZZReloadMainList(void) {
 %hook NewMainFrameViewController
 
 - (long long)logicGetCountForSection:(long long)section {
-    if (WCZZVCReentry(self) || section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return %orig(section);
+    if (WCZZVCReentry(self) || section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) {
+        return %orig(section);
+    }
     long long original = %orig(section);
     if (original <= 0) { WCZZClearVCRows(self); return original; }
     NSArray *rows = WCZZEnsureVCRows(self, original);
@@ -537,16 +539,22 @@ static void WCZZReloadMainList(void) {
 }
 
 - (id)logicGetSessionAtIndexPath:(id)indexPath {
-    if (WCZZVCReentry(self)) return %orig(indexPath);
+    if (WCZZVCReentry(self)) {
+        return %orig(indexPath);
+    }
     NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
-    if (!ip || ip.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return %orig(indexPath);
+    if (!ip || ip.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) {
+        return %orig(indexPath);
+    }
 
     long long original = WCZZVCOriginalCount(self);
     NSArray *rows = WCZZVCRows(self);
     if (![rows isKindOfClass:[NSArray class]] || original < 0) {
         return %orig(indexPath);
     }
-    if (rows.count >= (NSUInteger)original) return %orig(indexPath);
+    if (rows.count >= (NSUInteger)original) {
+        return %orig(indexPath);
+    }
 
     BOOL top = WCZZBool(WCZZGroupTopKey, YES);
     NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
@@ -559,25 +567,38 @@ static void WCZZReloadMainList(void) {
 }
 
 - (id)logicGetCellDataAtIndexPath:(id)indexPath {
-    if (WCZZVCReentry(self)) return %orig(indexPath);
+    if (WCZZVCReentry(self)) {
+        return %orig(indexPath);
+    }
     NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
-    if (!ip || ip.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return %orig(indexPath);
+    if (!ip || ip.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) {
+        return %orig(indexPath);
+    }
 
     long long original = WCZZVCOriginalCount(self);
     NSArray *rows = WCZZVCRows(self);
-    if (![rows isKindOfClass:[NSArray class]] || original < 0) return %orig(indexPath);
-    if (rows.count >= (NSUInteger)original) return %orig(indexPath);
+    if (![rows isKindOfClass:[NSArray class]] || original < 0) {
+        return %orig(indexPath);
+    }
+    if (rows.count >= (NSUInteger)original) {
+        return %orig(indexPath);
+    }
 
     BOOL top = WCZZBool(WCZZGroupTopKey, YES);
     NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
     if (ip.row == helperRow) return WCZZBuildVCFakeCellData(self);
     NSIndexPath *origIP = WCZZOriginalIPForVCRow(self, ip);
-    if (origIP) return %orig(origIP);
+    if (origIP) {
+        return %orig(origIP);
+    }
     return %orig(indexPath);
 }
 
 - (void)handleSelectIndexPath:(id)indexPath tableView:(id)tableView {
-    if (WCZZVCReentry(self)) { %orig(indexPath, tableView); return; }
+    if (WCZZVCReentry(self)) {
+        %orig(indexPath, tableView);
+        return;
+    }
     NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
     NSArray *rows = WCZZVCRows(self);
     long long original = WCZZVCOriginalCount(self);
@@ -595,7 +616,10 @@ static void WCZZReloadMainList(void) {
             return;
         }
         NSIndexPath *origIP = WCZZOriginalIPForVCRow(self, ip);
-        if (origIP) { %orig(origIP, tableView); return; }
+        if (origIP) {
+            %orig(origIP, tableView);
+            return;
+        }
     }
     %orig(indexPath, tableView);
 }
