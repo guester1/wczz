@@ -59,7 +59,7 @@ static void WCZZLog(NSString *format, ...) {
     NSString *line = [NSString stringWithFormat:@"[%@] %@", [df stringFromDate:[NSDate date]], msg ?: @""];
     dispatch_async(dispatch_get_main_queue(), ^{
         NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-        NSMutableArray *logs = ([d objectForKey:WCZZDebugLogsKey] isKindOfClass:[NSArray class] ? [[d objectForKey:WCZZDebugLogsKey] mutableCopy] : [NSMutableArray array]);
+        NSMutableArray *logs = ([[d objectForKey:WCZZDebugLogsKey] isKindOfClass:[NSArray class]] ? [[d objectForKey:WCZZDebugLogsKey] mutableCopy] : [NSMutableArray array]);
         [logs addObject:line];
         if (logs.count > 500) [logs removeObjectsInRange:NSMakeRange(0, logs.count - 500)];
         [d setObject:logs forKey:WCZZDebugLogsKey];
