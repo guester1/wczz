@@ -403,9 +403,6 @@ static const void *WCZZVCReentryKey = &WCZZVCReentryKey;
 static BOOL WCZZVCReentry(id vc) {
     return [objc_getAssociatedObject(vc, WCZZVCReentryKey) boolValue];
 }
-static void WCZZSetVCReentry(id vc, BOOL on) {
-    objc_setAssociatedObject(vc, WCZZVCReentryKey, @(on), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
 static NSArray *WCZZVCRows(id vc) { return objc_getAssociatedObject(vc, WCZZVCRowsKey); }
 static NSArray *WCZZVCFolded(id vc) { return objc_getAssociatedObject(vc, WCZZVCFoldedKey); }
 static long long WCZZVCOriginalCount(id vc) { return [objc_getAssociatedObject(vc, WCZZVCOriginalCountKey) longLongValue]; }
