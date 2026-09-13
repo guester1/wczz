@@ -737,10 +737,10 @@ static id WCZZBuildHelperCellData(id obj) {
     NSString *latestUsername = WCZZUsername(latestSession);
     id latestData = WCZZSessionCellDataForUsername(latestUsername);
     id m = WCZZValue(latestData, @"textForMsgLabel");
-    if (![m isKindOfClass:[NSString class]] || !m.length) m = WCZZValue(latestData, @"m_textForMsgLabel");
+    if (![m isKindOfClass:[NSString class]] || ![(NSString *)m length]) m = WCZZValue(latestData, @"m_textForMsgLabel");
     if ([m isKindOfClass:[NSString class]]) latestMessage = WCZZCleanHelperMessage(m);
     id t = WCZZValue(latestData, @"textForTimeLabel");
-    if (![t isKindOfClass:[NSString class]] || !t.length) t = WCZZValue(latestData, @"m_textForTimeLabel");
+    if (![t isKindOfClass:[NSString class]] || ![(NSString *)t length]) t = WCZZValue(latestData, @"m_textForTimeLabel");
     if ([t isKindOfClass:[NSString class]]) latestTime = t;
 
     NSString *message = latestMessage.length
