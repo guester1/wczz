@@ -6,7 +6,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 
-// wczz 1.0-8
+// wczz 1.0-20
 // Independent implementation for WeChat 8.0.75.
 // The main-list implementation works at MainFrameLogicController's logical
 // session boundary instead of fighting UITableView or WeChat's native fold UI.
@@ -428,19 +428,51 @@ static NSArray *WCZZBuildLogicRows(id obj, long long originalCount, NSMutableArr
 
     NSMutableArray *visible = [NSMutableArray arrayWithCapacity:(NSUInteger)originalCount];
     NSMutableArray *folded = [NSMutableArray array];
+    NSArray *serviceSessions = WCZZSessionList();
     WCZZSetLogicReentry(obj, YES);
 
     for (NSInteger i = 0; i < originalCount; i++) {
         NSIndexPath *ip = [NSIndexPath indexPathForRow:i inSection:0];
         id session = nil;
+        id cellData = nil;
+        NSString *username = nil;
+
+        // On this 8.0.75 build getSessionInfoAtIndexPath: can return nil even
+        // though the row is real.  Prefer the session object, then fall back to
+        // the row's cell-data username, and finally to MMNewSessionMgr's
+        // GetSessionInfoList.  The previous implementation treated nil as a
+        // non-group row, which is why the group assistant never folded anything.
         @try {
             session = [(MainFrameLogicController *)obj getSessionInfoAtIndexPath:ip];
-        } @catch (__unused NSException *e) {
-            session = nil;
+        } @catch (__unused NSException *e) {}
+
+        if (session) {
+            username = WCZZUsername(session);
         }
 
-        NSString *username = WCZZUsername(session);
-        BOOL fold = WCZZShouldFold(session);
+        if (!username.length) {
+            @try {
+                cellData = [(MainFrameLogicController *)obj getCellDataAtIndexPath:ip];
+            } @catch (__unused NSException *e) {}
+            id cellUsername = WCZZValue(cellData, @"userName");
+            if ([cellUsername isKindOfClass:[NSString class]]) username = cellUsername;
+            if (username.length && !session) {
+                WCZZLog(@"logic row=%ld username recovered from cellData=%@", (long)i, username);
+            }
+        }
+
+        if (!username.length && i < (NSInteger)serviceSessions.count) {
+            id fallback = serviceSessions[(NSUInteger)i];
+            NSString *fallbackUsername = WCZZUsername(fallback);
+            if (fallbackUsername.length) {
+                session = fallback;
+                username = fallbackUsername;
+                WCZZLog(@"logic row=%ld username recovered from sessionMgr=%@", (long)i, username);
+            }
+        }
+
+        BOOL fold = WCZZIsGroupUsername(username) && !WCZZIsCommonRoom(username) &&
+                    WCZZEnabled() && WCZZBool(WCZZGroupEnabledKey, YES);
         if (fold) {
             [folded addObject:@(i)];
         } else {
@@ -589,6 +621,55 @@ static void WCZZReloadMainList(void) {
     return result;
 }
 
+- (id)getSessionBaseInfoAtIndexPath:(id)indexPath {
+    if (WCZZLogicReentry(self)) return %orig(indexPath);
+
+    NSIndexPath *ip = [indexPath isKindOfClass:[NSIndexPath class]] ? (NSIndexPath *)indexPath : nil;
+    if (!ip || ip.section != 0 || !WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) {
+        return %orig(indexPath);
+    }
+
+    NSArray *rows = WCZZLogicRows(self);
+    long long original = WCZZLogicOriginalCount(self);
+    if (![rows isKindOfClass:[NSArray class]] || original < 0) {
+        WCZZSetLogicReentry(self, YES);
+        @try { original = [self getSessionCountForSection:0]; } @catch (__unused NSException *e) { original = -1; }
+        WCZZSetLogicReentry(self, NO);
+        if (original > 0) {
+            NSMutableArray *folded = nil;
+            rows = WCZZBuildLogicRows(self, original, &folded);
+        }
+    }
+
+    if (![rows isKindOfClass:[NSArray class]] || original <= 0 || rows.count >= (NSUInteger)original) {
+        return %orig(indexPath);
+    }
+
+    BOOL top = WCZZBool(WCZZGroupTopKey, YES);
+    NSInteger helperRow = top ? 0 : (NSInteger)rows.count;
+    if (ip.row == helperRow) return nil;
+
+    NSIndexPath *origIP = WCZZOriginalIPForLogicRow(self, ip);
+    if (!origIP) return nil;
+    return %orig(origIP);
+}
+
+- (unsigned int)getVisibleSessionCount {
+    if (WCZZLogicReentry(self)) return %orig;
+
+    unsigned int original = %orig;
+    if (!WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES) || original == 0) return original;
+
+    NSMutableArray *folded = nil;
+    NSArray *rows = WCZZBuildLogicRows(self, (long long)original, &folded);
+    if (![rows isKindOfClass:[NSArray class]] || folded.count == 0) return original;
+
+    unsigned int result = (unsigned int)rows.count + 1U;
+    WCZZLog(@"getVisibleSessionCount original=%u visible=%lu folded=%lu result=%u",
+            original, (unsigned long)rows.count, (unsigned long)folded.count, result);
+    return result;
+}
+
 - (id)getSessionInfoAtIndexPath:(id)indexPath {
     if (WCZZLogicReentry(self)) return %orig(indexPath);
 
@@ -676,6 +757,7 @@ static void WCZZReloadMainList(void) {
         if (ip.row == helperRow) {
             id delegate = WCZZValue(self, @"m_delegate");
             UIViewController *base = [delegate isKindOfClass:[UIViewController class]] ? (UIViewController *)delegate : nil;
+            if (!base) base = WCZZFindMainController();
             UINavigationController *nav = base.navigationController;
             if (!nav && [base isKindOfClass:[UINavigationController class]]) nav = (UINavigationController *)base;
             if (nav) {
@@ -769,13 +851,14 @@ static void WCZZLayoutRedSummaryLabel(id vc) {
     if (!label) return;
 
     UIView *root = [(UIViewController *)vc view];
-    CGFloat top = root.safeAreaInsets.top;
-    if (top < 20.0) top = 20.0;
-
-    CGFloat width = MIN(230.0, MAX(180.0, root.bounds.size.width * 0.55));
-    CGFloat height = 72.0;
+    // The red header is above/around the safe-area region on this WeChat
+    // screen.  Starting at safeAreaInsets.top made the four-line summary get
+    // clipped by the header, leaving only about one and a half lines visible.
+    // Put the overlay near the very top of the red header instead.
+    CGFloat width = MIN(280.0, MAX(230.0, root.bounds.size.width * 0.68));
+    CGFloat height = 102.0;
     CGFloat x = (root.bounds.size.width - width) * 0.5;
-    CGFloat y = top + 2.0;
+    CGFloat y = -6.0;
     label.frame = CGRectMake(x, y, width, height);
 }
 
@@ -823,8 +906,8 @@ static void WCZZApplyRedSummary(id vc, id data) {
 static void WCZZScheduleRedSummary(id vc, id data) {
     if (!vc || !data) return;
     objc_setAssociatedObject(vc, WCZZRedDataKey, data, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    for (NSInteger i = 0; i < 10; i++) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * i * NSEC_PER_SEC)),
+    for (NSInteger i = 0; i < 6; i++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * i * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             if (vc) WCZZApplyRedSummary(vc, data);
         });
