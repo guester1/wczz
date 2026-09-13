@@ -2,6 +2,10 @@
 #import <Foundation/Foundation.h>
 
 @interface NewMainFrameViewController : UIViewController
+- (long long)logicGetCountForSection:(long long)section;
+- (id)logicGetCellDataAtIndexPath:(id)indexPath;
+- (id)logicGetSessionAtIndexPath:(id)indexPath;
+- (void)handleSelectIndexPath:(id)indexPath tableView:(id)tableView;
 - (void)onLogicOpenSession:(id)session;
 - (void)onSessionRebuildEnd;
 - (void)viewDidAppear:(BOOL)animated;
