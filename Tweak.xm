@@ -6,7 +6,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 
-// wczz 1.0-29
+// wczz 1.0-30
 // Independent implementation for WeChat 8.0.75.
 // The main-list implementation works at MainFrameLogicController's logical
 // session boundary instead of fighting UITableView or WeChat's native fold UI.
@@ -1086,7 +1086,31 @@ static void WCZZReloadMainList(void) {
         // Let WeChat build its normal session cell. Our logicGetCellDataAtIndexPath:
         // hook supplies the synthetic 群助手 data for this row.
         WCZZLog(@"table helper cell row=%ld", (long)indexPath.row);
-        return %orig(tableView, indexPath);
+        UITableViewCell *cell = %orig(tableView, indexPath);
+        if (!cell) return cell;
+
+        // WeChat 8.0.75 may consume the tap through an internal selection chain
+        // without reaching either of our didSelect hooks. Attach a dedicated
+        // recognizer to the synthetic helper cell so the helper page remains
+        // directly tappable. The tag also prevents duplicate recognizers when
+        // UITableView reuses the cell.
+        NSMutableArray *stale = [NSMutableArray array];
+        for (UIGestureRecognizer *gesture in cell.gestureRecognizers) {
+            if ([gesture isKindOfClass:[UITapGestureRecognizer class]] && gesture.tag == 0x575A02) {
+                [stale addObject:gesture];
+            }
+        }
+        for (UIGestureRecognizer *gesture in stale) {
+            [cell removeGestureRecognizer:gesture];
+        }
+
+        UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                                                 action:@selector(wczzHelperCellTapped)];
+        tap.tag = 0x575A02;
+        tap.cancelsTouchesInView = NO;
+        [cell addGestureRecognizer:tap];
+        cell.userInteractionEnabled = YES;
+        return cell;
     }
 
     NSIndexPath *mapped = WCZZOriginalIPForLogicRow(logic, indexPath);
@@ -1099,6 +1123,13 @@ static void WCZZReloadMainList(void) {
         return cell;
     }
     return %orig(tableView, indexPath);
+}
+
+- (void)wczzHelperCellTapped {
+    WCZZLog(@"helper cell tapped");
+    UIViewController *base = WCZZFindMainController();
+    if (!base) base = self;
+    WCZZPushGroupHelper(base);
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -1401,7 +1432,7 @@ static void WCZZRegisterPlugin(void) {
     if (!c || ![c respondsToSelector:shared]) return;
     id mgr = ((id (*)(id, SEL))objc_msgSend)(c, shared);
     if (!mgr || ![mgr respondsToSelector:reg]) return;
-    ((void (*)(id, SEL, id, id, id))objc_msgSend)(mgr, reg, @"wczz", @"1.0-29", @"WCZZSettingsViewController");
+    ((void (*)(id, SEL, id, id, id))objc_msgSend)(mgr, reg, @"wczz", @"1.0-30", @"WCZZSettingsViewController");
     WCZZRegistered = YES;
     WCZZLog(@"plugin registration OK");
 }
@@ -1450,7 +1481,7 @@ static void WCZZInstallHooksWhenReady(void) {
                                                   usingBlock:^(__unused NSNotification *note) {
         WCZZFlushDebugLogs();
     }];
-        WCZZLog(@"v1.0-29 constructor");
+        WCZZLog(@"v1.0-30 constructor");
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCZZInstallHooksWhenReady(); });
     }
 }
