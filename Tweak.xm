@@ -654,6 +654,7 @@ static id WCZZBuildHelperCellData(id obj) {
     if (![folded isKindOfClass:[NSArray class]] || folded.count == 0) return nil;
 
     id templateData = nil;
+    id templateSession = nil;
     unsigned long long unreadTotal = 0;
     NSString *latestMessage = nil;
     NSString *latestTime = nil;
@@ -662,25 +663,42 @@ static id WCZZBuildHelperCellData(id obj) {
         NSIndexPath *ip = [NSIndexPath indexPathForRow:n.integerValue inSection:0];
         WCZZSetLogicReentry(obj, YES);
         id session = nil;
-        id data = nil;
         @try { session = [(MainFrameLogicController *)obj getSessionInfoAtIndexPath:ip]; } @catch (__unused NSException *e) {}
-        @try { data = [(MainFrameLogicController *)obj getCellDataAtIndexPath:ip]; } @catch (__unused NSException *e) {}
         WCZZSetLogicReentry(obj, NO);
 
         unreadTotal += (unsigned long long)[WCZZValue(session, @"m_uUnReadCount") unsignedIntValue];
-        if (!templateData && data) templateData = data;
-        if (!latestMessage.length) {
-            id m = WCZZValue(data, @"textForMessageLabel");
-            if ([m isKindOfClass:[NSString class]] && [m length]) latestMessage = m;
+        if (!templateSession && session) templateSession = session;
+
+        if (!templateData && session) {
+            NSString *username = WCZZUsername(session);
+            if (username.length) templateData = WCZZSessionCellDataForUsername(username);
         }
-        if (!latestTime.length) {
-            id t = WCZZValue(data, @"textForTimeLabel");
-            if ([t isKindOfClass:[NSString class]] && [t length]) latestTime = t;
+
+        if (!latestMessage.length) {
+            id data = nil;
+            if (session) {
+                NSString *username = WCZZUsername(session);
+                if (username.length) data = WCZZSessionCellDataForUsername(username);
+            }
+            id m = WCZZValue(data, @"textForMsgLabel");
+            if (![m isKindOfClass:[NSString class]] || ![m length]) m = WCZZValue(data, @"m_textForMsgLabel");
+            if ([m isKindOfClass:[NSString class]] && [m length]) latestMessage = m;
+            if (!latestTime.length) {
+                id t = WCZZValue(data, @"textForTimeLabel");
+                if (![t isKindOfClass:[NSString class]] || ![t length]) t = WCZZValue(data, @"m_textForTimeLabel");
+                if ([t isKindOfClass:[NSString class]] && [t length]) latestTime = t;
+            }
         }
     }
 
     if (!templateData) {
-        WCZZLog(@"helper data: no template available");
+        WCZZLog(@"helper data: no native MMBaseSessionCellData template");
+        return nil;
+    }
+
+    Class nativeDataClass = objc_getClass("MMBaseSessionCellData");
+    if (!nativeDataClass || ![templateData isKindOfClass:nativeDataClass]) {
+        WCZZLog(@"helper data: template class=%@ is not MMBaseSessionCellData", NSStringFromClass([templateData class]));
         return nil;
     }
 
@@ -701,9 +719,7 @@ static id WCZZBuildHelperCellData(id obj) {
     }
 
     id data = nil;
-    @try {
-        if ([templateData respondsToSelector:@selector(copyWithZone:)]) data = [templateData copy];
-    } @catch (__unused NSException *e) {}
+    @try { data = [templateData copy]; } @catch (__unused NSException *e) {}
     if (!data) data = templateData;
 
     NSString *message = latestMessage.length
@@ -711,17 +727,56 @@ static id WCZZBuildHelperCellData(id obj) {
         : [NSString stringWithFormat:@"[%llu条]", unreadTotal];
 
     @try {
-        [data setValue:WCZZGroupUserName forKey:@"userName"];
-        [data setValue:@"群助手" forKey:@"textForNameLabel"];
-        [data setValue:message forKey:@"textForMessageLabel"];
-        [data setValue:(latestTime ?: @"") forKey:@"textForTimeLabel"];
-        [data setValue:@(unreadTotal) forKey:@"m_uUnReadCount"];
-        [data setValue:@(unreadTotal) forKey:@"unReadCount"];
-        [data setValue:@(unreadTotal) forKey:@"unreadCount"];
+        [data setValue:WCZZGroupUserName forKey:@"m_userName"];
+        [data setValue:@"群助手" forKey:@"m_textForNameLabel"];
+        [data setValue:message forKey:@"m_textForMsgLabel"];
+        [data setValue:(latestTime ?: @"") forKey:@"m_textForTimeLabel"];
+        [data setValue:@(MIN(unreadTotal, UINT_MAX)) forKey:@"m_unreadCount"];
+        [data setValue:@(0U) forKey:@"m_msgStatus"];
+        [data setValue:@((unsigned int)[[NSDate date] timeIntervalSince1970]) forKey:@"m_updateTime"];
     } @catch (__unused NSException *e) {}
+
+    Class infoClass = objc_getClass("MMBaseSessionInfo");
+    if (infoClass && templateSession) {
+        SEL baseSel = NSSelectorFromString(@"baseSessionInfoWithUsrName:contact:lastMessage:unreadCount:");
+        if ([infoClass respondsToSelector:baseSel]) {
+            id contact = WCZZContact(templateSession);
+            id lastMessage = WCZZValue(templateSession, @"m_msgWrap");
+            @try {
+                id baseInfo = ((id (*)(id, SEL, id, id, id, unsigned int))objc_msgSend)(infoClass, baseSel, WCZZGroupUserName, contact, lastMessage, (unsigned int)MIN(unreadTotal, UINT_MAX));
+                if (baseInfo) [data setValue:baseInfo forKey:@"m_baseSessionInfo"];
+            } @catch (__unused NSException *e) {}
+        }
+    }
+
+    static UIImage *helperHeadImage = nil;
+    if (!helperHeadImage) {
+        CGSize size = CGSizeMake(60.0, 60.0);
+        UIGraphicsBeginImageContextWithOptions(size, NO, 0.0);
+        CGContextRef ctx = UIGraphicsGetCurrentContext();
+        if (ctx) {
+            UIBezierPath *bg = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, size.width, size.height) cornerRadius:8.0];
+            [[UIColor colorWithRed:0.13 green:0.55 blue:0.95 alpha:1.0] setFill];
+            [bg fill];
+            [[UIColor whiteColor] setStroke];
+            CGFloat x = 13.0, y = 17.0, w = 34.0, h = 25.0;
+            UIBezierPath *env = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(x, y, w, h) cornerRadius:3.0];
+            env.lineWidth = 3.0;
+            [env stroke];
+            UIBezierPath *left = [UIBezierPath bezierPath];
+            [left moveToPoint:CGPointMake(x + 2.0, y + 3.0)];
+            [left addLineToPoint:CGPointMake(x + w * 0.5, y + h * 0.58)];
+            [left addLineToPoint:CGPointMake(x + w - 2.0, y + 3.0)];
+            left.lineWidth = 3.0;
+            [left stroke];
+        }
+        helperHeadImage = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+    }
+    @try { [data setValue:helperHeadImage forKey:@"headImage"]; } @catch (__unused NSException *e) {}
+
     return data;
 }
-
 static void WCZZReloadMainList(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIViewController *main = WCZZFindMainController();
