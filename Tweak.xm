@@ -6,7 +6,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 
-// wczz 1.0-22
+// wczz 1.0-23
 // Independent implementation for WeChat 8.0.75.
 // The main-list implementation works at MainFrameLogicController's logical
 // session boundary instead of fighting UITableView or WeChat's native fold UI.
@@ -837,8 +837,8 @@ static void WCZZReloadMainList(void) {
     BOOL top = WCZZBool(WCZZGroupTopKey, YES);
     NSMutableArray *paths = [NSMutableArray arrayWithCapacity:rows.count + 1];
     if (top) [paths addObject:[NSIndexPath indexPathForRow:0 inSection:0]];
-    for (NSNumber *n in rows) {
-        NSInteger visibleRow = top ? (NSInteger)[paths count] : (NSInteger)[paths count];
+    for (NSUInteger i = 0; i < rows.count; i++) {
+        NSInteger visibleRow = top ? (NSInteger)i + 1 : (NSInteger)i;
         [paths addObject:[NSIndexPath indexPathForRow:visibleRow inSection:0]];
     }
     if (!top) [paths addObject:[NSIndexPath indexPathForRow:rows.count inSection:0]];
@@ -874,7 +874,7 @@ static void WCZZReloadMainList(void) {
     long long origResult = %orig(session);
     if (!WCZZEnabled() || !WCZZBool(WCZZGroupEnabledKey, YES)) return origResult;
     NSString *u = WCZZUsername(session);
-    if (!u.length || WCZZIsGroupUsername(u) && !WCZZIsCommonRoom(u)) return -1;
+    if (!u.length || (WCZZIsGroupUsername(u) && !WCZZIsCommonRoom(u))) return -1;
     id logic = WCZZValue(self, @"m_mainFrameLogicController");
     NSArray *rows = logic ? WCZZLogicRows(logic) : nil;
     NSArray *folded = logic ? WCZZLogicFolded(logic) : nil;
@@ -1207,7 +1207,7 @@ static void WCZZRegisterPlugin(void) {
     if (!c || ![c respondsToSelector:shared]) return;
     id mgr = ((id (*)(id, SEL))objc_msgSend)(c, shared);
     if (!mgr || ![mgr respondsToSelector:reg]) return;
-    ((void (*)(id, SEL, id, id, id))objc_msgSend)(mgr, reg, @"wczz", @"1.0-22", @"WCZZSettingsViewController");
+    ((void (*)(id, SEL, id, id, id))objc_msgSend)(mgr, reg, @"wczz", @"1.0-23", @"WCZZSettingsViewController");
     WCZZRegistered = YES;
     WCZZLog(@"plugin registration OK");
 }
