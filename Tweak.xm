@@ -1183,7 +1183,6 @@ static void WCZZReloadMainList(void) {
         rows = WCZZLogicRows(logic);
         folded = WCZZLogicFolded(logic);
     }
-    BOOL top = WCZZBool(WCZZGroupTopKey, YES);
     NSInteger helperRow = WCZZHelperRowForRows(rows);
     if (ip.row == helperRow && folded.count > 0) return WCZZBuildHelperCellData(logic);
     NSIndexPath *mapped = WCZZOriginalIPForLogicRow(logic, ip);
