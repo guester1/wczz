@@ -839,11 +839,11 @@ static id WCZZBuildHelperCellData(id obj) {
             latestMessage = nil;
             latestTime = nil;
             id m = WCZZValue(data, @"textForMsgLabel");
-            if (![m isKindOfClass:[NSString class]] || !m.length) m = WCZZValue(data, @"m_textForMsgLabel");
-            if ([m isKindOfClass:[NSString class]] && m.length) latestMessage = m;
+            if (![m isKindOfClass:[NSString class]] || [(NSString *)m length] == 0) m = WCZZValue(data, @"m_textForMsgLabel");
+            if ([m isKindOfClass:[NSString class]] && [(NSString *)m length] > 0) latestMessage = (NSString *)m;
             id t = WCZZValue(data, @"textForTimeLabel");
-            if (![t isKindOfClass:[NSString class]] || !t.length) t = WCZZValue(data, @"m_textForTimeLabel");
-            if ([t isKindOfClass:[NSString class]] && t.length) latestTime = t;
+            if (![t isKindOfClass:[NSString class]] || [(NSString *)t length] == 0) t = WCZZValue(data, @"m_textForTimeLabel");
+            if ([t isKindOfClass:[NSString class]] && [(NSString *)t length] > 0) latestTime = (NSString *)t;
         }
     }
 
