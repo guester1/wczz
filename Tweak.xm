@@ -1140,6 +1140,7 @@ static void WCZZReloadMainList(void) {
 
     id logic = WCZZValue(self, @"m_mainFrameLogicController");
     if (!logic) return origPaths;
+
     NSArray *rows = WCZZLogicRows(logic);
     NSArray *folded = WCZZLogicFolded(logic);
     if (![rows isKindOfClass:[NSArray class]] || ![folded isKindOfClass:[NSArray class]] || folded.count == 0) {
@@ -1150,18 +1151,67 @@ static void WCZZReloadMainList(void) {
     if (![rows isKindOfClass:[NSArray class]] || folded.count == 0) return origPaths;
 
     BOOL top = WCZZBool(WCZZGroupTopKey, YES);
-    NSMutableArray *paths = [NSMutableArray arrayWithCapacity:rows.count + 1];
     NSInteger helperRow = WCZZHelperRowForRows(rows);
-    for (NSUInteger i = 0; i < rows.count; i++) {
-        NSInteger visibleRow = (NSInteger)i;
+    NSMutableArray *paths = [NSMutableArray arrayWithCapacity:origPaths.count + 1];
+    BOOL helperInserted = NO;
+
+    for (NSIndexPath *path in origPaths) {
+        if (![path isKindOfClass:[NSIndexPath class]] || path.section != 0) {
+            if (path) [paths addObject:path];
+            continue;
+        }
+
+        // Preserve non-session rows supplied by WeChat itself (for example
+        // the desktop-login banner). Only remap paths that resolve to an
+        // actual MainFrame session.
+        NSInteger originalRow = path.row;
+        if (originalRow < 0 || originalRow >= WCZZLogicOriginalCount(logic)) {
+            [paths addObject:path];
+            continue;
+        }
+
+        id session = nil;
+        WCZZSetLogicReentry(logic, YES);
+        @try {
+            session = [(MainFrameLogicController *)logic getSessionInfoAtIndexPath:path];
+        } @catch (__unused NSException *e) {}
+        WCZZSetLogicReentry(logic, NO);
+
+        NSString *username = WCZZUsername(session);
+        if (!username.length) {
+            [paths addObject:path];
+            continue;
+        }
+
+        NSUInteger visibleIndex = NSNotFound;
+        for (NSUInteger i = 0; i < rows.count; i++) {
+            if ([rows[i] integerValue] == originalRow) {
+                visibleIndex = i;
+                break;
+            }
+        }
+        if (visibleIndex == NSNotFound) {
+            // This was a folded group: it is intentionally absent from the
+            // main list and appears only under 群助手.
+            continue;
+        }
+
+        NSInteger visibleRow = (NSInteger)visibleIndex;
         if (top && visibleRow >= helperRow) visibleRow++;
         [paths addObject:[NSIndexPath indexPathForRow:visibleRow inSection:0]];
-        if (top && visibleRow == helperRow - 1) {
+
+        if (top && !helperInserted && visibleRow >= helperRow) {
             [paths addObject:[NSIndexPath indexPathForRow:helperRow inSection:0]];
+            helperInserted = YES;
         }
     }
-    if (rows.count == 0) [paths addObject:[NSIndexPath indexPathForRow:helperRow inSection:0]];
-    if (!top) [paths addObject:[NSIndexPath indexPathForRow:helperRow inSection:0]];
+
+    if (top && !helperInserted) {
+        NSInteger insertIndex = MIN((NSInteger)paths.count, helperRow);
+        [paths insertObject:[NSIndexPath indexPathForRow:helperRow inSection:0] atIndex:(NSUInteger)insertIndex];
+    } else if (!top) {
+        [paths addObject:[NSIndexPath indexPathForRow:helperRow inSection:0]];
+    }
     return paths;
 }
 
@@ -1283,16 +1333,16 @@ static void WCZZReloadMainList(void) {
     id logic = WCZZValue(self, @"m_mainFrameLogicController");
     if (!logic) return original;
 
-    long long count = original;
-    @try {
-        count = [(MainFrameLogicController *)logic getSessionCountForSection:0];
-    } @catch (__unused NSException *e) {}
+    NSArray *folded = WCZZLogicFolded(logic);
+    if (![folded isKindOfClass:[NSArray class]] || folded.count == 0) return original;
 
-    if (count > 0 && count != original) {
-        WCZZLog(@"table rows override original=%ld filtered=%lld", (long)original, count);
-        return (NSInteger)count;
-    }
-    return original;
+    // Keep every native table row that WeChat itself supplied (including the
+    // desktop-login banner). Only replace folded group rows with one 群助手 row.
+    NSInteger result = original - (NSInteger)folded.count + 1;
+    if (result < 0) result = original;
+    WCZZLog(@"table rows override original=%ld folded=%lu result=%ld",
+            (long)original, (unsigned long)folded.count, (long)result);
+    return result;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
