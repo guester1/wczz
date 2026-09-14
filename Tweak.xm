@@ -5,8 +5,9 @@
 #import <stdarg.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import <limits.h>
 
-// wczz 1.0-32 / v60-no-miyou
+// wczz 1.0-32 / v62-no-miyou
 // Independent implementation for WeChat 8.0.75.
 // The main-list implementation works at MainFrameLogicController's logical
 // session boundary instead of fighting UITableView or WeChat's native fold UI.
@@ -501,6 +502,7 @@ static const void *WCZZLogicRowsKey = &WCZZLogicRowsKey;
 static const void *WCZZLogicFoldedKey = &WCZZLogicFoldedKey;
 static const void *WCZZLogicOriginalCountKey = &WCZZLogicOriginalCountKey;
 static const void *WCZZLogicReentryKey = &WCZZLogicReentryKey;
+static const void *WCZZHelperSessionKey = &WCZZHelperSessionKey;
 
 static NSArray *WCZZLogicRows(id obj) {
     return objc_getAssociatedObject(obj, WCZZLogicRowsKey);
@@ -522,6 +524,7 @@ static void WCZZClearLogicRows(id obj) {
     objc_setAssociatedObject(obj, WCZZLogicRowsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(obj, WCZZLogicFoldedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(obj, WCZZLogicOriginalCountKey, @(-1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(obj, WCZZHelperSessionKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static NSArray *WCZZBuildLogicRows(id obj, long long originalCount, NSMutableArray **foldedOut);
@@ -677,29 +680,115 @@ static NSInteger WCZZHelperRowForRows(NSArray *rows) {
     return rows.count > 0 ? 1 : 0;
 }
 
-static id WCZZFirstFoldedSession(id obj) {
-    NSArray *folded = WCZZLogicFolded(obj);
-    if (![folded isKindOfClass:[NSArray class]] || folded.count == 0) return nil;
-    NSNumber *n = folded.firstObject;
-    if (![n isKindOfClass:[NSNumber class]]) return nil;
-    NSIndexPath *ip = [NSIndexPath indexPathForRow:n.integerValue inSection:0];
+static id WCZZSessionForOriginalRow(id obj, NSInteger row) {
+    if (row < 0) return nil;
+    NSArray *serviceSessions = WCZZSessionList();
+    if (row < (NSInteger)serviceSessions.count) {
+        id candidate = serviceSessions[(NSUInteger)row];
+        if (candidate) return candidate;
+    }
     WCZZSetLogicReentry(obj, YES);
     id session = nil;
-    @try { session = [(MainFrameLogicController *)obj getSessionInfoAtIndexPath:ip]; } @catch (__unused NSException *e) {}
+    @try {
+        session = [(MainFrameLogicController *)obj getSessionInfoAtIndexPath:[NSIndexPath indexPathForRow:row inSection:0]];
+    } @catch (__unused NSException *e) {}
     WCZZSetLogicReentry(obj, NO);
     return session;
 }
 
-static id WCZZFirstFoldedBaseInfo(id obj) {
+static void WCZZSetKVCObject(id obj, NSString *key, id value) {
+    if (!obj || !key.length) return;
+    @try { [obj setValue:value forKey:key]; return; } @catch (__unused NSException *e) {}
+    NSString *direct = key;
+    NSString *underscored = [NSString stringWithFormat:@"_%@", key];
+    Ivar ivar = class_getInstanceVariable(object_getClass(obj), direct.UTF8String);
+    if (!ivar) ivar = class_getInstanceVariable(object_getClass(obj), underscored.UTF8String);
+    if (ivar && value) object_setIvar(obj, ivar, value);
+}
+
+static id WCZZMakeHelperSession(id obj) {
+    id cached = objc_getAssociatedObject(obj, WCZZHelperSessionKey);
+    if (cached && [WCZZUsername(cached) isEqualToString:WCZZGroupUserName]) return cached;
+
     NSArray *folded = WCZZLogicFolded(obj);
     if (![folded isKindOfClass:[NSArray class]] || folded.count == 0) return nil;
-    NSNumber *n = folded.firstObject;
-    if (![n isKindOfClass:[NSNumber class]]) return nil;
-    NSIndexPath *ip = [NSIndexPath indexPathForRow:n.integerValue inSection:0];
-    WCZZSetLogicReentry(obj, YES);
-    id info = nil;
-    @try { info = [(MainFrameLogicController *)obj getSessionBaseInfoAtIndexPath:ip]; } @catch (__unused NSException *e) {}
-    WCZZSetLogicReentry(obj, NO);
+
+    id templateSession = nil;
+    id latestSession = nil;
+    NSTimeInterval latestTimestamp = -1;
+    NSArray *serviceSessions = WCZZSessionList();
+
+    for (NSNumber *n in folded) {
+        if (![n isKindOfClass:[NSNumber class]]) continue;
+        NSInteger row = n.integerValue;
+        id session = row >= 0 && row < (NSInteger)serviceSessions.count ? serviceSessions[(NSUInteger)row] : nil;
+        if (!session) session = WCZZSessionForOriginalRow(obj, row);
+        if (!session) continue;
+        if (!templateSession) templateSession = session;
+        id update = WCZZValue(session, @"m_updateTime");
+        NSTimeInterval stamp = [update respondsToSelector:@selector(doubleValue)] ? [update doubleValue] : 0;
+        if (!latestSession || stamp > latestTimestamp) {
+            latestSession = session;
+            latestTimestamp = stamp;
+        }
+    }
+
+    if (!templateSession) return nil;
+
+    id helper = nil;
+    if ([templateSession conformsToProtocol:@protocol(NSCopying)]) {
+        @try { helper = [templateSession copy]; } @catch (__unused NSException *e) { helper = nil; }
+    }
+    if (!helper) {
+        Class cls = object_getClass(templateSession);
+        @try {
+            helper = [[cls alloc] init];
+        } @catch (__unused NSException *e) {
+            helper = nil;
+        }
+    }
+    if (!helper) return nil;
+
+    unsigned long long unreadTotal = 0;
+    for (NSNumber *n in folded) {
+        if (![n isKindOfClass:[NSNumber class]]) continue;
+        NSInteger row = n.integerValue;
+        id session = row >= 0 && row < (NSInteger)serviceSessions.count ? serviceSessions[(NSUInteger)row] : nil;
+        if (!session) session = WCZZSessionForOriginalRow(obj, row);
+        unreadTotal += (unsigned long long)[WCZZValue(session, @"m_uUnReadCount") unsignedIntValue];
+    }
+
+    WCZZSetKVCObject(helper, @"m_nsUserName", WCZZGroupUserName);
+    WCZZSetKVCObject(helper, @"m_userName", WCZZGroupUserName);
+    WCZZSetKVCObject(helper, @"m_uUnReadCount", @(MIN(unreadTotal, UINT_MAX)));
+    WCZZSetKVCObject(helper, @"m_unreadCount", @(MIN(unreadTotal, UINT_MAX)));
+    if (latestSession) {
+        id contact = WCZZContact(latestSession);
+        id lastMessage = WCZZValue(latestSession, @"m_msgWrap");
+        if (contact) WCZZSetKVCObject(helper, @"m_contact", contact);
+        if (lastMessage) WCZZSetKVCObject(helper, @"m_msgWrap", lastMessage);
+        id update = WCZZValue(latestSession, @"m_updateTime");
+        if (update) WCZZSetKVCObject(helper, @"m_updateTime", update);
+    }
+    WCZZSetKVCObject(helper, @"m_nsNickName", @"群助手");
+
+    if (![WCZZUsername(helper) isEqualToString:WCZZGroupUserName]) {
+        WCZZLog(@"helper session creation failed class=%@ username=%@", NSStringFromClass(object_getClass(helper)), WCZZUsername(helper));
+        return nil;
+    }
+
+    objc_setAssociatedObject(obj, WCZZHelperSessionKey, helper, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    WCZZLog(@"helper session created class=%@ unread=%llu", NSStringFromClass(object_getClass(helper)), unreadTotal);
+    return helper;
+}
+
+static id WCZZBuildHelperCellData(id obj);
+
+static id WCZZFirstFoldedBaseInfo(id obj) {
+    id helper = WCZZMakeHelperSession(obj);
+    if (!helper) return nil;
+    id data = WCZZBuildHelperCellData(obj);
+    id info = WCZZValue(data, @"m_baseSessionInfo");
     return info;
 }
 
@@ -717,8 +806,6 @@ static NSIndexPath *WCZZOriginalIPForLogicRow(id obj, NSIndexPath *visibleIP) {
     return [NSIndexPath indexPathForRow:originalRow inSection:0];
 }
 
-static id WCZZBuildHelperCellData(id obj);
-
 static id WCZZBuildHelperCellData(id obj) {
     NSArray *folded = WCZZLogicFolded(obj);
     if (![folded isKindOfClass:[NSArray class]] || folded.count == 0) return nil;
@@ -728,36 +815,35 @@ static id WCZZBuildHelperCellData(id obj) {
     unsigned long long unreadTotal = 0;
     NSString *latestMessage = nil;
     NSString *latestTime = nil;
+    NSTimeInterval latestStamp = -1;
+    NSArray *serviceSessions = WCZZSessionList();
 
     for (NSNumber *n in folded) {
-        NSIndexPath *ip = [NSIndexPath indexPathForRow:n.integerValue inSection:0];
-        WCZZSetLogicReentry(obj, YES);
-        id session = nil;
-        @try { session = [(MainFrameLogicController *)obj getSessionInfoAtIndexPath:ip]; } @catch (__unused NSException *e) {}
-        WCZZSetLogicReentry(obj, NO);
+        if (![n isKindOfClass:[NSNumber class]]) continue;
+        NSInteger row = n.integerValue;
+        id session = row >= 0 && row < (NSInteger)serviceSessions.count ? serviceSessions[(NSUInteger)row] : nil;
+        if (!session) session = WCZZSessionForOriginalRow(obj, row);
+        if (!session) continue;
 
         unreadTotal += (unsigned long long)[WCZZValue(session, @"m_uUnReadCount") unsignedIntValue];
-        if (!templateSession && session) templateSession = session;
+        id update = WCZZValue(session, @"m_updateTime");
+        NSTimeInterval stamp = [update respondsToSelector:@selector(doubleValue)] ? [update doubleValue] : 0;
 
-        if (!templateData && session) {
-            NSString *username = WCZZUsername(session);
-            if (username.length) templateData = WCZZSessionCellDataForUsername(username);
-        }
+        NSString *username = WCZZUsername(session);
+        id data = username.length ? WCZZSessionCellDataForUsername(username) : nil;
+        if (!templateData && data) templateData = data;
+        if (!templateSession) templateSession = session;
 
-        if (!latestMessage.length) {
-            id data = nil;
-            if (session) {
-                NSString *username = WCZZUsername(session);
-                if (username.length) data = WCZZSessionCellDataForUsername(username);
-            }
+        if (stamp >= latestStamp) {
+            latestStamp = stamp;
+            latestMessage = nil;
+            latestTime = nil;
             id m = WCZZValue(data, @"textForMsgLabel");
-            if (![m isKindOfClass:[NSString class]] || ![m length]) m = WCZZValue(data, @"m_textForMsgLabel");
-            if ([m isKindOfClass:[NSString class]] && [m length]) latestMessage = m;
-            if (!latestTime.length) {
-                id t = WCZZValue(data, @"textForTimeLabel");
-                if (![t isKindOfClass:[NSString class]] || ![t length]) t = WCZZValue(data, @"m_textForTimeLabel");
-                if ([t isKindOfClass:[NSString class]] && [t length]) latestTime = t;
-            }
+            if (![m isKindOfClass:[NSString class]] || !m.length) m = WCZZValue(data, @"m_textForMsgLabel");
+            if ([m isKindOfClass:[NSString class]] && m.length) latestMessage = m;
+            id t = WCZZValue(data, @"textForTimeLabel");
+            if (![t isKindOfClass:[NSString class]] || !t.length) t = WCZZValue(data, @"m_textForTimeLabel");
+            if ([t isKindOfClass:[NSString class]] && t.length) latestTime = t;
         }
     }
 
@@ -766,10 +852,7 @@ static id WCZZBuildHelperCellData(id obj) {
     if (!templateData) {
         @try { templateData = [[nativeDataClass alloc] init]; } @catch (__unused NSException *e) { templateData = nil; }
     }
-    if (!templateData || ![templateData isKindOfClass:nativeDataClass]) {
-        WCZZLog(@"helper data: cannot create MMBaseSessionCellData");
-        return nil;
-    }
+    if (!templateData || ![templateData isKindOfClass:nativeDataClass]) return nil;
 
     id data = nil;
     @try { data = [templateData copy]; } @catch (__unused NSException *e) {}
@@ -779,15 +862,13 @@ static id WCZZBuildHelperCellData(id obj) {
         ? [NSString stringWithFormat:@"[%llu条] %@", unreadTotal, latestMessage]
         : [NSString stringWithFormat:@"[%llu条]", unreadTotal];
 
-    @try {
-        [data setValue:WCZZGroupUserName forKey:@"m_userName"];
-        [data setValue:@"群助手" forKey:@"m_textForNameLabel"];
-        [data setValue:message forKey:@"m_textForMsgLabel"];
-        [data setValue:(latestTime ?: @"") forKey:@"m_textForTimeLabel"];
-        [data setValue:@(MIN(unreadTotal, UINT_MAX)) forKey:@"m_unreadCount"];
-        [data setValue:@(0U) forKey:@"m_msgStatus"];
-        [data setValue:@((unsigned int)[[NSDate date] timeIntervalSince1970]) forKey:@"m_updateTime"];
-    } @catch (__unused NSException *e) {}
+    WCZZSetKVCObject(data, @"m_userName", WCZZGroupUserName);
+    WCZZSetKVCObject(data, @"m_textForNameLabel", @"群助手");
+    WCZZSetKVCObject(data, @"m_textForMsgLabel", message);
+    WCZZSetKVCObject(data, @"m_textForTimeLabel", latestTime ?: @"");
+    WCZZSetKVCObject(data, @"m_unreadCount", @(MIN(unreadTotal, UINT_MAX)));
+    WCZZSetKVCObject(data, @"m_msgStatus", @(0U));
+    WCZZSetKVCObject(data, @"m_updateTime", @((unsigned int)[[NSDate date] timeIntervalSince1970]));
 
     Class infoClass = objc_getClass("MMBaseSessionInfo");
     if (infoClass && templateSession) {
@@ -797,7 +878,7 @@ static id WCZZBuildHelperCellData(id obj) {
             id lastMessage = WCZZValue(templateSession, @"m_msgWrap");
             @try {
                 id baseInfo = ((id (*)(id, SEL, id, id, id, unsigned int))objc_msgSend)(infoClass, baseSel, WCZZGroupUserName, contact, lastMessage, (unsigned int)MIN(unreadTotal, UINT_MAX));
-                if (baseInfo) [data setValue:baseInfo forKey:@"m_baseSessionInfo"];
+                if (baseInfo) WCZZSetKVCObject(data, @"m_baseSessionInfo", baseInfo);
             } @catch (__unused NSException *e) {}
         }
     }
@@ -826,13 +907,12 @@ static id WCZZBuildHelperCellData(id obj) {
         helperHeadImage = UIGraphicsGetImageFromCurrentImageContext();
         UIGraphicsEndImageContext();
     }
-    @try { [data setValue:helperHeadImage forKey:@"headImage"]; } @catch (__unused NSException *e) {}
-
+    WCZZSetKVCObject(data, @"headImage", helperHeadImage);
     return data;
 }
 
 static id WCZZBuildHelperSessionInfo(id obj) {
-    return WCZZFirstFoldedSession(obj);
+    return WCZZMakeHelperSession(obj);
 }
 
 static void WCZZReloadMainList(void) {
